@@ -1,0 +1,134 @@
+# Open Design 本地服务操作手册
+
+本目录提供 3 个 PowerShell 脚本，用于在 Windows 本地启动、重启、停止 Open Design 的两个后台服务：
+
+- Daemon：`http://127.0.0.1:17456`
+- Web：`http://127.0.0.1:17573`
+
+脚本会显式使用 Node 24：
+
+```powershell
+C:\Users\Administrator\AppData\Local\nvm\v24.15.0\node.exe
+```
+
+不会修改当前系统默认 Node 版本。
+
+## 前置条件
+
+在仓库根目录执行命令：
+
+```powershell
+cd D:\Workspaces\AI\open-design
+```
+
+确认依赖已经安装：
+
+```powershell
+Test-Path node_modules
+```
+
+如果返回 `False`，先安装依赖：
+
+```powershell
+corepack pnpm install
+```
+
+## 启动服务
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\script\start-open-design-services.ps1
+```
+
+启动成功后访问：
+
+```text
+http://127.0.0.1:17573
+```
+
+健康检查：
+
+```powershell
+Invoke-WebRequest -Uri http://127.0.0.1:17456/api/health -UseBasicParsing
+```
+
+预期返回包含：
+
+```json
+{"ok":true,"version":"0.6.0"}
+```
+
+## 重启服务
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\script\restart-open-design-services.ps1
+```
+
+该脚本会先停止 Web 和 Daemon，再重新隐藏窗口启动两者。
+
+## 停止服务
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\script\stop-open-design-services.ps1
+```
+
+停止后可以检查状态：
+
+```powershell
+& "C:\Users\Administrator\AppData\Local\nvm\v24.15.0\node.exe" tools\dev\bin\tools-dev.mjs status --json
+```
+
+预期 `daemon` 和 `web` 都是 `idle`。
+
+## 自定义端口
+
+启动或重启时可以指定端口：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\script\start-open-design-services.ps1 -DaemonPort 17456 -WebPort 17573
+```
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\script\restart-open-design-services.ps1 -DaemonPort 17456 -WebPort 17573
+```
+
+## 自定义 Node 24 路径
+
+如果 Node 24 安装在其他位置，可以传入 `-Node24Path`：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\script\start-open-design-services.ps1 -Node24Path "C:\path\to\node.exe"
+```
+
+## 常见问题
+
+### 启动后没有黑色 Node 窗口
+
+这是预期行为。脚本通过隐藏窗口方式启动后台进程，避免关闭窗口导致服务被杀掉。
+
+### 访问 Web 返回错误
+
+先看服务状态：
+
+```powershell
+& "C:\Users\Administrator\AppData\Local\nvm\v24.15.0\node.exe" tools\dev\bin\tools-dev.mjs status --json
+```
+
+再查看 Web 日志：
+
+```powershell
+Get-Content .tmp\tools-dev\default\web\next\dev\logs\next-development.log -Tail 120
+```
+
+### 端口被占用
+
+换一组端口启动：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\script\restart-open-design-services.ps1 -DaemonPort 18456 -WebPort 18573
+```
+
+然后访问：
+
+```text
+http://127.0.0.1:18573
+```
