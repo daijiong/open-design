@@ -1,18 +1,19 @@
 import type { Express } from 'express';
 import type { RouteDeps } from './server-context.js';
 
-export interface RegisterDeployRoutesDeps extends RouteDeps<'db' | 'http' | 'paths' | 'ids' | 'deploy' | 'projectStore'> {}
+export interface RegisterDeployRoutesDeps extends RouteDeps<'db' | 'http' | 'auth' | 'paths' | 'ids' | 'deploy' | 'projectStore'> {}
 
 export function registerDeployRoutes(app: Express, ctx: RegisterDeployRoutesDeps) {
   const { db } = ctx;
   const { sendApiError } = ctx.http;
+  const { requireAdmin, requireProjectAccess } = ctx.auth;
   const { PROJECTS_DIR } = ctx.paths;
   const { randomUUID } = ctx.ids;
   const { getProject } = ctx.projectStore;
   const { VERCEL_PROVIDER_ID, CLOUDFLARE_PAGES_PROVIDER_ID, isDeployProviderId, publicDeployConfigForProvider, readDeployConfig, writeDeployConfig, listCloudflarePagesZones, DeployError, listDeployments, publicDeployments, getDeployment, buildDeployFileSet, cloudflarePagesProjectNameForDeploy, deployToCloudflarePages, deployToVercel, upsertDeployment, publicDeployment, cloudflarePagesDeploymentMetadata, prepareDeployPreflight } = ctx.deploy;
   // ---- Deploy --------------------------------------------------------------
 
-  app.get('/api/deploy/config', async (req, res) => {
+  app.get('/api/deploy/config', requireAdmin, async (req, res) => {
     try {
       const providerId =
         typeof req.query.providerId === 'string' ? req.query.providerId : VERCEL_PROVIDER_ID;
@@ -27,7 +28,7 @@ export function registerDeployRoutes(app: Express, ctx: RegisterDeployRoutesDeps
     }
   });
 
-  app.put('/api/deploy/config', async (req, res) => {
+  app.put('/api/deploy/config', requireAdmin, async (req, res) => {
     try {
       const input = req.body || {};
       const providerId =
@@ -43,7 +44,7 @@ export function registerDeployRoutes(app: Express, ctx: RegisterDeployRoutesDeps
     }
   });
 
-  app.get('/api/deploy/cloudflare-pages/zones', async (_req, res) => {
+  app.get('/api/deploy/cloudflare-pages/zones', requireAdmin, async (_req, res) => {
     try {
       /** @type {import('@open-design/contracts').CloudflarePagesZonesResponse} */
       const body = await listCloudflarePagesZones(await readDeployConfig(CLOUDFLARE_PAGES_PROVIDER_ID));
@@ -60,6 +61,7 @@ export function registerDeployRoutes(app: Express, ctx: RegisterDeployRoutesDeps
 
   app.get('/api/projects/:id/deployments', (req, res) => {
     try {
+      if (!requireProjectAccess(req, res, req.params.id)) return;
       /** @type {import('@open-design/contracts').ProjectDeploymentsResponse} */
       const body = { deployments: publicDeployments(listDeployments(db, req.params.id)) };
       res.json(body);
@@ -71,6 +73,7 @@ export function registerDeployRoutes(app: Express, ctx: RegisterDeployRoutesDeps
   app.post('/api/projects/:id/deploy', async (req, res) => {
     try {
       const { fileName, providerId = VERCEL_PROVIDER_ID, cloudflarePages } = req.body || {};
+      if (!requireProjectAccess(req, res, req.params.id)) return;
       if (!isDeployProviderId(providerId)) {
         return sendApiError(
           res,
@@ -154,6 +157,7 @@ export function registerDeployRoutes(app: Express, ctx: RegisterDeployRoutesDeps
   app.post('/api/projects/:id/deploy/preflight', async (req, res) => {
     try {
       const { fileName, providerId = VERCEL_PROVIDER_ID } = req.body || {};
+      if (!requireProjectAccess(req, res, req.params.id)) return;
       if (!isDeployProviderId(providerId)) {
         return sendApiError(
           res,

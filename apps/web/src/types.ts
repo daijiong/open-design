@@ -41,6 +41,8 @@ import type {
   ProviderModelsResponse,
   Project,
   ProjectPlatform,
+  UserRole,
+  UserStatus,
   PreviewCommentMember,
   PreviewCommentSelectionKind,
   PreviewComment,
@@ -65,6 +67,7 @@ import type {
   InstallDesignSystemResponse,
   UninstallResponse,
   UpdateDeployConfigRequest,
+  CurrentUser,
 } from '@open-design/contracts';
 
 export type {
@@ -75,6 +78,10 @@ export type {
   OrbitStatusResponse,
   PreviewCommentMember,
   PreviewCommentSelectionKind,
+  PreviewVisualMarkKind,
+  CurrentUser,
+  UserRole,
+  UserStatus,
 } from '@open-design/contracts';
 
 export type ExecMode = 'daemon' | 'api';

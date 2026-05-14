@@ -51,6 +51,19 @@ vi.mock('../../src/components/pet/pets', () => ({
   migrateCustomPetAtlas: vi.fn().mockResolvedValue(null),
 }));
 
+vi.mock('../../src/state/auth', () => ({
+  fetchCurrentUser: vi.fn().mockResolvedValue({
+    id: 'admin-user',
+    email: 'admin@example.com',
+    name: 'Admin',
+    role: 'admin',
+    status: 'active',
+    createdAt: 1,
+    updatedAt: 1,
+  }),
+  logoutUser: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock('../../src/components/SettingsDialog', () => ({
   SettingsDialog: ({
     initial,
@@ -206,7 +219,7 @@ describe('App connectors settings flows', () => {
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: 'Open connectors settings' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open connectors settings' }));
 
     await waitFor(() => {
       expect(screen.getByText('Composio tail: uQEg')).toBeTruthy();
@@ -248,7 +261,7 @@ describe('App connectors settings flows', () => {
       expect(container.querySelector('.privacy-consent-banner')).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Open connectors settings' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open connectors settings' }));
 
     await waitFor(() => {
       expect(screen.getByRole('dialog', { name: 'Settings dialog' })).toBeTruthy();
@@ -267,7 +280,7 @@ describe('App connectors settings flows', () => {
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: 'Open connectors settings' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open connectors settings' }));
 
     await waitFor(() => {
       expect(screen.getByRole('dialog', { name: 'Settings dialog' })).toBeTruthy();
@@ -320,7 +333,7 @@ describe('App connectors settings flows', () => {
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: 'Open connectors settings' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open connectors settings' }));
 
     await waitFor(() => {
       expect(screen.getByRole('dialog', { name: 'Settings dialog' })).toBeTruthy();

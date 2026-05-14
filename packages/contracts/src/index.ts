@@ -3,6 +3,7 @@ export * from './errors';
 export * from './tasks';
 export * from './api/app-config';
 export * from './api/artifacts';
+export * from './api/auth';
 export * from './api/chat';
 export * from './api/connectors';
 export * from './api/comments';

@@ -6,7 +6,7 @@ import {
   projectKindToTracking,
 } from '@open-design/contracts/analytics';
 
-export interface RegisterChatRoutesDeps extends RouteDeps<'db' | 'design' | 'http' | 'chat' | 'agents' | 'critique' | 'validation' | 'lifecycle'> {}
+export interface RegisterChatRoutesDeps extends RouteDeps<'db' | 'design' | 'http' | 'auth' | 'chat' | 'agents' | 'critique' | 'validation' | 'lifecycle'> {}
 
 // Invariant: a chat assistant message row reflects its run's terminal state
 // even when the web client never persists the cancel/finish itself (refresh
@@ -37,6 +37,7 @@ function reconcileAssistantMessageOnRunEnd(
 export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
   const { db, design } = ctx;
   const { sendApiError, createSseResponse } = ctx.http;
+  const { currentUser, requireAuth, requireAdmin, requireProjectAccess, canAccessProject } = ctx.auth;
   const { startChatRun } = ctx.chat;
   const { testProviderConnection, testAgentConnection, getAgentDef, isKnownModel, sanitizeCustomModel, listProviderModels } = ctx.agents;
   const {
@@ -48,9 +49,20 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
   } = ctx.critique;
   const { validateBaseUrl } = ctx.validation;
   const isDaemonShuttingDown = ctx.lifecycle?.isDaemonShuttingDown ?? (() => false);
-  app.post('/api/runs', (req, res) => {
+  function canAccessRun(req: any, run: any): boolean {
+    const user = currentUser(req);
+    if (!user || !run) return false;
+    if (!run.projectId) return true;
+    const project = db.prepare(`SELECT owner_user_id AS ownerUserId FROM projects WHERE id = ?`).get(run.projectId);
+    return canAccessProject(user, project);
+  }
+
+  app.post('/api/runs', requireAuth, (req, res) => {
     if (isDaemonShuttingDown()) {
       return sendApiError(res, 503, 'UPSTREAM_UNAVAILABLE', 'daemon is shutting down');
+    }
+    if (typeof req.body?.projectId === 'string' && !requireProjectAccess(req, res, req.body.projectId)) {
+      return;
     }
     const run = design.runs.create(req.body || {});
     const declared = String(req.get('x-od-client') ?? '').toLowerCase();
@@ -190,38 +202,45 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
     }
   });
 
-  app.get('/api/runs', (req, res) => {
+  app.get('/api/runs', requireAuth, (req, res) => {
     const { projectId, conversationId, status } = req.query;
+    if (typeof projectId === 'string' && !requireProjectAccess(req, res, projectId)) return;
     const runs = design.runs.list({ projectId, conversationId, status });
     /** @type {import('@open-design/contracts').ChatRunListResponse} */
     const body = { runs: runs.map(design.runs.statusBody) };
     res.json(body);
   });
 
-  app.get('/api/runs/:id', (req, res) => {
+  app.get('/api/runs/:id', requireAuth, (req, res) => {
     const run = design.runs.get(req.params.id);
     if (!run) return sendApiError(res, 404, 'NOT_FOUND', 'run not found');
+    if (!canAccessRun(req, run)) return sendApiError(res, 404, 'NOT_FOUND', 'run not found');
     res.json(design.runs.statusBody(run));
   });
 
-  app.get('/api/runs/:id/events', (req, res) => {
+  app.get('/api/runs/:id/events', requireAuth, (req, res) => {
     const run = design.runs.get(req.params.id);
     if (!run) return sendApiError(res, 404, 'NOT_FOUND', 'run not found');
+    if (!canAccessRun(req, run)) return sendApiError(res, 404, 'NOT_FOUND', 'run not found');
     design.runs.stream(run, req, res);
   });
 
-  app.post('/api/runs/:id/cancel', (req, res) => {
+  app.post('/api/runs/:id/cancel', requireAuth, (req, res) => {
     const run = design.runs.get(req.params.id);
     if (!run) return sendApiError(res, 404, 'NOT_FOUND', 'run not found');
+    if (!canAccessRun(req, run)) return sendApiError(res, 404, 'NOT_FOUND', 'run not found');
     design.runs.cancel(run);
     /** @type {import('@open-design/contracts').ChatRunCancelResponse} */
     const body = { ok: true };
     res.json(body);
   });
 
-  app.post('/api/chat', (req, res) => {
+  app.post('/api/chat', requireAuth, (req, res) => {
     if (isDaemonShuttingDown()) {
       return sendApiError(res, 503, 'UPSTREAM_UNAVAILABLE', 'daemon is shutting down');
+    }
+    if (typeof req.body?.projectId === 'string' && !requireProjectAccess(req, res, req.body.projectId)) {
+      return;
     }
     const run = design.runs.create();
     design.runs.stream(run, req, res);
@@ -234,7 +253,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
   // failures so the web layer can render a categorized inline status without
   // unwrapping nested error envelopes; real 4xx/5xx here mean a malformed
   // request or daemon bug.
-  app.post('/api/provider/models', async (req, res) => {
+  app.post('/api/provider/models', requireAdmin, async (req, res) => {
     const controller = new AbortController();
     const abortIfRequestAborted = () => {
       if ((req.aborted || !req.complete) && !res.writableEnded) {
@@ -293,7 +312,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
     }
   });
 
-  app.post('/api/test/connection', async (req, res) => {
+  app.post('/api/test/connection', requireAdmin, async (req, res) => {
     const controller = new AbortController();
     const abortIfRequestAborted = () => {
       if ((req.aborted || !req.complete) && !res.writableEnded) {
@@ -627,7 +646,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
     return '';
   };
 
-  app.post('/api/proxy/anthropic/stream', async (req, res) => {
+  app.post('/api/proxy/anthropic/stream', requireAuth, async (req, res) => {
     /** @type {Partial<ProxyStreamRequest>} */
     const proxyBody = req.body || {};
     const { baseUrl, apiKey, model, systemPrompt, messages, maxTokens } =
@@ -722,7 +741,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
     }
   });
 
-  app.post('/api/proxy/openai/stream', async (req, res) => {
+  app.post('/api/proxy/openai/stream', requireAuth, async (req, res) => {
     /** @type {Partial<ProxyStreamRequest>} */
     const proxyBody = req.body || {};
     const { baseUrl, apiKey, model, systemPrompt, messages, maxTokens } =
@@ -817,7 +836,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
     }
   });
 
-  app.post('/api/proxy/azure/stream', async (req, res) => {
+  app.post('/api/proxy/azure/stream', requireAuth, async (req, res) => {
     /** @type {Partial<ProxyStreamRequest>} */
     const proxyBody = req.body || {};
     const { baseUrl, apiKey, model, systemPrompt, messages, maxTokens, apiVersion } =
@@ -929,7 +948,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
     }
   });
 
-  app.post('/api/proxy/google/stream', async (req, res) => {
+  app.post('/api/proxy/google/stream', requireAuth, async (req, res) => {
     /** @type {Partial<ProxyStreamRequest>} */
     const proxyBody = req.body || {};
     const { baseUrl, apiKey, model, systemPrompt, messages, maxTokens } = proxyBody;
@@ -1028,7 +1047,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
     }
   });
 
-  app.post('/api/proxy/ollama/stream', async (req, res) => {
+  app.post('/api/proxy/ollama/stream', requireAuth, async (req, res) => {
     const proxyBody = req.body || {};
     const { baseUrl, apiKey, model, systemPrompt, messages, maxTokens } = proxyBody;
     if (!apiKey || !model) {

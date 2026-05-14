@@ -146,6 +146,7 @@ import {
   setToken,
 } from './mcp-tokens.js';
 import { agentCliEnvForAgent, readAppConfig, writeAppConfig } from './app-config.js';
+import { createAuthDeps, registerAuthRoutes } from './auth.js';
 import { OrbitService, formatLocalProjectTimestamp, renderOrbitTemplateSystemPrompt } from './orbit.js';
 import {
   RoutineService,
@@ -200,6 +201,7 @@ import {
   listMessages,
   listPreviewComments,
   listProjects,
+  listProjectsForUser,
   listRoutines,
   listRoutineRuns,
   listTabs,
@@ -2298,12 +2300,58 @@ export async function startServer({
     res.json({ version });
   });
 
-  registerConnectorRoutes(app, {
-    sendApiError,
-    authorizeToolRequest,
-    projectsRoot: PROJECTS_DIR,
-    requireLocalDaemonRequest,
-    composio: composioConnectorProvider,
+  // Prometheus scrape endpoint (Phase 12). Returns the full exposition
+  // format string. Operators put this behind their existing auth proxy;
+  // there is no built-in authn on the daemon HTTP server. To disable
+  // the endpoint entirely (air-gapped installs, regulatory contexts),
+  // set `OD_METRICS_ENDPOINT=disabled`; the route is registered only
+  // when that env value is not the literal string 'disabled'.
+  if (process.env.OD_METRICS_ENDPOINT !== 'disabled') {
+    app.get('/api/metrics', async (_req, res) => {
+      res.setHeader('Content-Type', register.contentType);
+      res.send(await getCritiqueMetrics());
+    });
+  }
+
+  // Phase 16 ratchet endpoint. Returns the rolling conformance window
+  // and the ratchet's current recommendation. Operator-driven by
+  // design: the recommendation does not flip OD_CRITIQUE_ROLLOUT_PHASE
+  // automatically, it surfaces so a deploy-pipeline follow-up can
+  // consume it. Tunables come from query string; defaults are the
+  // spec values (14 days, 0.90 shipped, 0.95 clean-parse).
+  // Codex + lefarcen P1 on PR #1499: clamp query inputs before the
+  // evaluator sees them so a request like `?windowDays=0` falls back to
+  // the spec default rather than producing a zero-evidence promotion.
+  // The evaluator also defends at its own entry; both are intentional
+  // (belt + suspenders) so a future caller that bypasses this route
+  // cannot reach an unguarded code path either.
+  const parsePositiveInt = (raw: unknown, fallback: number): number => {
+    if (typeof raw !== 'string' || raw.length === 0) return fallback;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+  };
+  const parseRate = (raw: unknown, fallback: number): number => {
+    if (typeof raw !== 'string' || raw.length === 0) return fallback;
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 0 && n <= 1 ? n : fallback;
+  };
+  app.get('/api/critique/conformance', async (req, res) => {
+    try {
+      const windowDays = parsePositiveInt(req.query.windowDays, 14);
+      const shippedThreshold = parseRate(req.query.shippedThreshold, 0.90);
+      const cleanParseThreshold = parseRate(req.query.cleanParseThreshold, 0.95);
+      const history = await readConformanceHistory(RUNTIME_DATA_DIR, windowDays);
+      const decision = evaluateRollout({
+        current: parseRolloutPhase(process.env.OD_CRITIQUE_ROLLOUT_PHASE),
+        history,
+        windowDays,
+        shippedThreshold,
+        cleanParseThreshold,
+      });
+      res.json({ window: { days: windowDays, history }, decision });
+    } catch (err) {
+      sendApiError(res, 500, 'INTERNAL_ERROR', err instanceof Error ? err.message : String(err));
+    }
   });
 
   // ---- Projects (DB-backed) -------------------------------------------------
@@ -2764,6 +2812,7 @@ export async function startServer({
     normalizeProjectDisplayStatus,
     composeProjectDisplayStatus,
     listProjects,
+    listProjectsForUser,
   };
   const projectEventDeps = { subscribeFileEvents, activeProjectEventSinks };
   const importDeps = { importClaudeDesignZip, projectDir, detectEntryFile };
@@ -2846,7 +2895,8 @@ export async function startServer({
     listLiveArtifactRefreshLogEntries,
     deleteLiveArtifact,
   };
-  const authDeps = {
+  const userAuthDeps = createAuthDeps(db, sendApiError, getProject);
+  const desktopAuthDeps = {
     authorizeToolRequest,
     consumedImportNonces,
     desktopAuthSecret: () => desktopAuthSecret,
@@ -2879,7 +2929,17 @@ export async function startServer({
     critiqueRunRegistry,
   };
 
+  registerAuthRoutes(app, db, userAuthDeps, sendApiError);
+
   // External services
+  registerConnectorRoutes(app, {
+    sendApiError,
+    authorizeToolRequest,
+    projectsRoot: PROJECTS_DIR,
+    requireLocalDaemonRequest,
+    requireAdmin: userAuthDeps.requireAdmin,
+    composio: composioConnectorProvider,
+  });
   registerMcpRoutes(app, {
     http: httpDeps,
     paths: pathDeps,
@@ -2895,6 +2955,7 @@ export async function startServer({
     db,
     design,
     http: httpDeps,
+    auth: userAuthDeps,
     paths: pathDeps,
     projectStore: projectStoreDeps,
     projectFiles: projectFileDeps,
@@ -2913,7 +2974,7 @@ export async function startServer({
     ids: idDeps,
     paths: pathDeps,
     imports: importDeps,
-    auth: authDeps,
+    auth: { ...desktopAuthDeps, ...userAuthDeps },
     projectStore: projectStoreDeps,
     conversations: conversationDeps,
     projectFiles: projectFileDeps,
@@ -2922,6 +2983,7 @@ export async function startServer({
   // Resource catalog
   registerStaticResourceRoutes(app, {
     http: httpDeps,
+    auth: userAuthDeps,
     paths: pathDeps,
     resources: {
       listAllSkills,
@@ -2942,7 +3004,7 @@ export async function startServer({
     db,
     http: httpDeps,
     paths: pathDeps,
-    auth: authDeps,
+    auth: desktopAuthDeps,
     liveArtifacts: liveArtifactDeps,
     projectStore: projectStoreDeps,
   });
@@ -2950,6 +3012,7 @@ export async function startServer({
   registerDeployRoutes(app, {
     db,
     http: httpDeps,
+    auth: userAuthDeps,
     paths: pathDeps,
     ids: idDeps,
     deploy: deployDeps,
@@ -2958,6 +3021,7 @@ export async function startServer({
   registerFinalizeRoutes(app, {
     db,
     http: httpDeps,
+    auth: userAuthDeps,
     paths: pathDeps,
     projectStore: projectStoreDeps,
     validation: validationDeps,
@@ -2968,6 +3032,7 @@ export async function startServer({
   registerProjectExportRoutes(app, {
     db,
     http: httpDeps,
+    auth: userAuthDeps,
     paths: pathDeps,
     projectStore: projectStoreDeps,
     exports: projectExportDeps,
@@ -2977,6 +3042,7 @@ export async function startServer({
   registerProjectFileRoutes(app, {
     db,
     http: httpDeps,
+    auth: userAuthDeps,
     paths: pathDeps,
     uploads: uploadDeps,
     node: nodeDeps,
@@ -2989,6 +3055,7 @@ export async function startServer({
   registerMediaRoutes(app, {
     db,
     http: httpDeps,
+    auth: userAuthDeps,
     paths: pathDeps,
     ids: idDeps,
     media: mediaDeps,
@@ -3000,7 +3067,7 @@ export async function startServer({
     conversations: conversationDeps,
     research: researchDeps,
   });
-  registerProjectUploadRoutes(app, { http: httpDeps, uploads: uploadDeps, node: nodeDeps });
+  registerProjectUploadRoutes(app, { http: httpDeps, uploads: uploadDeps, node: nodeDeps, auth: userAuthDeps, projectStore: projectStoreDeps });
 
   const composeDaemonSystemPrompt = async ({
     agentId,
@@ -4643,7 +4710,7 @@ export async function startServer({
     exports: projectExportDeps,
     artifacts: artifactDeps,
     documents: { buildDocumentPreview },
-    auth: authDeps,
+    auth: { ...desktopAuthDeps, ...userAuthDeps },
     liveArtifacts: liveArtifactDeps,
     deploy: deployDeps,
     media: mediaDeps,
@@ -4678,6 +4745,7 @@ export async function startServer({
     db,
     design,
     http: httpDeps,
+    auth: userAuthDeps,
     chat: { startChatRun },
     agents: agentDeps,
     critique: critiqueDeps,

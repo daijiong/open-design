@@ -58,6 +58,7 @@ import type {
   AppTheme,
   AppVersionInfo,
   ConnectionTestResponse,
+  CurrentUser,
   OrbitRunSummary,
   OrbitStatusResponse,
   ExecMode,
@@ -95,6 +96,7 @@ import {
   requestNotificationPermission,
   showCompletionNotification,
 } from '../utils/notifications';
+import { listAdminUsers, updateAdminUser } from '../state/auth';
 
 export type SettingsSection =
   | 'execution'
@@ -111,14 +113,177 @@ export type SettingsSection =
   | 'skills'
   | 'designSystems'
   | 'memory'
+  | 'users'
   | 'privacy'
   | 'about';
+
+const MEMBER_SETTINGS_SECTIONS: ReadonlySet<SettingsSection> = new Set([
+  'language',
+  'appearance',
+  'notifications',
+  'pet',
+  'privacy',
+  'about',
+]);
+
+const DEFAULT_ADMIN_USER: CurrentUser = {
+  id: 'local-admin',
+  email: 'admin@example.com',
+  name: 'Admin',
+  role: 'admin',
+  status: 'active',
+  createdAt: 0,
+  updatedAt: 0,
+};
+
+const USER_ROLE_LABEL: Record<CurrentUser['role'], string> = {
+  admin: '管理员',
+  member: '成员',
+};
+
+const USER_STATUS_LABEL: Record<CurrentUser['status'], string> = {
+  active: '启用',
+  disabled: '禁用',
+  pending: '待处理',
+};
+
+function formatUserTime(value: number | undefined): string {
+  if (!value) return '从未';
+  return new Date(value).toLocaleString();
+}
+
+function AdminUsersSection({ currentUser }: { currentUser: CurrentUser }) {
+  const [users, setUsers] = useState<CurrentUser[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
+
+  const loadUsers = useCallback(async () => {
+    setLoading(true);
+    const result = await listAdminUsers();
+    setLoading(false);
+    if ('error' in result) {
+      setNotice({ kind: 'error', message: result.error });
+      return;
+    }
+    setUsers(result.users);
+  }, []);
+
+  useEffect(() => {
+    void loadUsers();
+  }, [loadUsers]);
+
+  const patchUser = async (
+    user: CurrentUser,
+    patch: Partial<Pick<CurrentUser, 'name' | 'role' | 'status'>>,
+  ) => {
+    setNotice(null);
+    setSavingId(user.id);
+    const result = await updateAdminUser(user.id, patch);
+    setSavingId(null);
+    if ('error' in result) {
+      setNotice({ kind: 'error', message: result.error });
+      return;
+    }
+    setUsers((current) => current.map((item) => (item.id === result.user.id ? result.user : item)));
+    setNotice({ kind: 'success', message: '用户信息已保存。' });
+  };
+
+  return (
+    <section className="settings-section admin-users-section">
+      <div className="section-head">
+        <div>
+          <h3>团队用户</h3>
+          <p className="hint">管理团队成员账号、角色和启用状态。</p>
+        </div>
+        <button type="button" className="ghost icon-btn" onClick={() => void loadUsers()} disabled={loading}>
+          {loading ? '加载中...' : '刷新'}
+        </button>
+      </div>
+      {notice ? (
+        <p className={`admin-users-notice ${notice.kind}`} role={notice.kind === 'error' ? 'alert' : 'status'}>
+          {notice.message}
+        </p>
+      ) : null}
+      <div className="admin-users-list" aria-busy={loading}>
+        {loading ? (
+          <div className="empty-card">正在加载用户...</div>
+        ) : users.length === 0 ? (
+          <div className="empty-card">暂无用户。</div>
+        ) : (
+          users.map((user) => {
+            const saving = savingId === user.id;
+            const isSelf = user.id === currentUser.id;
+            return (
+              <div className="admin-user-row" key={user.id}>
+                <div className="admin-user-main">
+                  <input
+                    className="admin-user-name"
+                    value={user.name}
+                    disabled={saving}
+                    aria-label={`姓名 ${user.email}`}
+                    onChange={(event) => {
+                      const name = event.target.value;
+                      setUsers((current) => current.map((item) => (item.id === user.id ? { ...item, name } : item)));
+                    }}
+                    onBlur={(event) => {
+                      const name = event.target.value.trim();
+                      if (name) void patchUser(user, { name });
+                    }}
+                  />
+                  <div className="admin-user-email">
+                    {user.email}
+                    {isSelf ? <span className="admin-user-self">当前用户</span> : null}
+                  </div>
+                </div>
+                <div className="admin-user-controls">
+                  <label>
+                    <span>角色</span>
+                    <select
+                      value={user.role}
+                      disabled={saving}
+                      onChange={(event) =>
+                        void patchUser(user, { role: event.target.value as CurrentUser['role'] })
+                      }
+                    >
+                      <option value="admin">{USER_ROLE_LABEL.admin}</option>
+                      <option value="member">{USER_ROLE_LABEL.member}</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>状态</span>
+                    <select
+                      value={user.status}
+                      disabled={saving}
+                      onChange={(event) =>
+                        void patchUser(user, { status: event.target.value as CurrentUser['status'] })
+                      }
+                    >
+                      <option value="active">{USER_STATUS_LABEL.active}</option>
+                      <option value="disabled">{USER_STATUS_LABEL.disabled}</option>
+                      <option value="pending">{USER_STATUS_LABEL.pending}</option>
+                    </select>
+                  </label>
+                </div>
+                <div className="admin-user-meta">
+                  <span>注册：{formatUserTime(user.createdAt)}</span>
+                  <span>最后登录：{formatUserTime(user.lastLoginAt)}</span>
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+    </section>
+  );
+}
 
 interface Props {
   initial: AppConfig;
   agents: AgentInfo[];
   daemonLive: boolean;
   appVersionInfo: AppVersionInfo | null;
+  currentUser?: CurrentUser;
   welcome?: boolean;
   initialSection?: SettingsSection;
   /**
@@ -639,6 +804,7 @@ export function SettingsDialog({
   agents,
   daemonLive,
   appVersionInfo,
+  currentUser,
   welcome,
   initialSection = 'execution',
   onPersist,
@@ -652,6 +818,7 @@ export function SettingsDialog({
   onReloadMediaProviders,
 }: Props) {
   const { t, locale, setLocale } = useI18n();
+  const isAdmin = (currentUser ?? DEFAULT_ADMIN_USER).role === 'admin';
   const analytics = useAnalytics();
   const [cfg, setCfg] = useState<AppConfig>(initial);
   const lastSavedAppearanceRef = useRef({
@@ -681,7 +848,16 @@ export function SettingsDialog({
     };
   }, []);
   const [showApiKey, setShowApiKey] = useState(false);
-  const [activeSection, setActiveSection] = useState<SettingsSection>(initialSection);
+  const [activeSection, setActiveSection] = useState<SettingsSection>(
+    () => (isAdmin || MEMBER_SETTINGS_SECTIONS.has(initialSection) ? initialSection : 'appearance'),
+  );
+  const canUseSection = useCallback(
+    (section: SettingsSection) => isAdmin || MEMBER_SETTINGS_SECTIONS.has(section),
+    [isAdmin],
+  );
+  useEffect(() => {
+    if (!canUseSection(activeSection)) setActiveSection('appearance');
+  }, [activeSection, canUseSection]);
   // Scroll the right-hand content pane back to the top whenever the user
   // picks a different settings section. Without this, switching from a
   // long section the user had scrolled (e.g. Library) into a short one
@@ -1430,6 +1606,7 @@ export function SettingsDialog({
       subtitle: t('settings.designSystemsHint'),
     },
     memory: { title: t('settings.memory'), subtitle: t('settings.memoryHint') },
+    users: { title: '用户管理', subtitle: '管理团队成员账号、角色和状态。' },
     about: { title: t('settings.about'), subtitle: t('settings.aboutHint') },
   };
   const activeHeader = sectionHeader[activeSection];
@@ -1508,6 +1685,8 @@ export function SettingsDialog({
 
         <div className="modal-body">
           <aside className="settings-sidebar" aria-label="Settings sections">
+            {isAdmin ? (
+              <>
             <button
               type="button"
               className={`settings-nav-item${activeSection === 'execution' ? ' active' : ''}`}
@@ -1528,6 +1707,17 @@ export function SettingsDialog({
               <span>
                 <strong>{t('settings.memory')}</strong>
                 <small>{t('settings.memoryHint')}</small>
+              </span>
+            </button>
+            <button
+              type="button"
+              className={`settings-nav-item${activeSection === 'users' ? ' active' : ''}`}
+              onClick={() => setActiveSection('users')}
+            >
+              <Icon name="users" size={18} />
+              <span>
+                <strong>用户管理</strong>
+                <small>角色与账号状态</small>
               </span>
             </button>
             <button
@@ -1607,6 +1797,8 @@ export function SettingsDialog({
                 <small>{t('settings.mcpServerHint')}</small>
               </span>
             </button>
+              </>
+            ) : null}
             <button
               type="button"
               className={`settings-nav-item${activeSection === 'language' ? ' active' : ''}`}
@@ -1651,6 +1843,7 @@ export function SettingsDialog({
                 <small>{t('pet.navHint')}</small>
               </span>
             </button>
+            {isAdmin ? (
             <button
               type="button"
               className={`settings-nav-item${activeSection === 'designSystems' ? ' active' : ''}`}
@@ -1662,6 +1855,7 @@ export function SettingsDialog({
                 <small>{t('settings.designSystemsHint')}</small>
               </span>
             </button>
+            ) : null}
             <button
               type="button"
               className={`settings-nav-item${activeSection === 'privacy' ? ' active' : ''}`}
@@ -2577,6 +2771,10 @@ export function SettingsDialog({
               </section>
               <MemorySection />
             </>
+          ) : null}
+
+          {activeSection === 'users' ? (
+            <AdminUsersSection currentUser={currentUser ?? DEFAULT_ADMIN_USER} />
           ) : null}
 
           {activeSection === 'privacy' ? (
