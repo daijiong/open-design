@@ -36,4 +36,5 @@ export interface UpdateUserRequest {
   name?: string;
   role?: UserRole;
   status?: UserStatus;
+  password?: string;
 }

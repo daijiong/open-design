@@ -76,7 +76,7 @@ export async function listAdminUsers(): Promise<{ users: CurrentUser[] } | { err
 
 export async function updateAdminUser(
   id: string,
-  patch: { name?: string; role?: UserRole; status?: UserStatus },
+  patch: { name?: string; role?: UserRole; status?: UserStatus; password?: string },
 ): Promise<{ user: CurrentUser } | { error: string }> {
   try {
     const resp = await fetch(`/api/admin/users/${encodeURIComponent(id)}`, {

@@ -460,6 +460,34 @@
   font: inherit;
 }
 
+.admin-user-password {
+  min-width: 210px;
+}
+
+.admin-user-password-input {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.admin-user-password-input input {
+  width: 130px;
+  min-width: 0;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  padding: 0 8px;
+  font: inherit;
+}
+
+.admin-user-password-input button {
+  height: 32px;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
 .admin-user-meta {
   grid-column: 1 / -1;
   display: flex;
@@ -475,10 +503,20 @@
 
   .admin-user-controls {
     align-items: stretch;
+    flex-wrap: wrap;
   }
 
   .admin-user-controls label {
     flex: 1 1 0;
+  }
+
+  .admin-user-password {
+    flex-basis: 100%;
+    min-width: 0;
+  }
+
+  .admin-user-password-input input {
+    width: 100%;
   }
 }
 
