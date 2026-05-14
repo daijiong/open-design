@@ -17,6 +17,7 @@ import type {
   AppConfig,
   DesignSystemSummary,
   Project,
+  CurrentUser,
   ProjectKind,
   ProjectMetadata,
   ProjectTemplate,
@@ -59,6 +60,7 @@ interface Props {
   promptTemplates: PromptTemplateSummary[];
   defaultDesignSystemId: string | null;
   config: AppConfig;
+  currentUser: CurrentUser;
   agents: AgentInfo[];
   // Per-resource loading flags. Each tab gates its own content on whichever
   // flag matches the data it renders, so a slow `/api/agents` probe does
@@ -79,6 +81,7 @@ interface Props {
   onRenameProject: (id: string, name: string) => void;
   onChangeDefaultDesignSystem: (id: string) => void;
   onOpenSettings: (section?: 'execution' | 'media' | 'composio' | 'language' | 'appearance' | 'notifications' | 'pet' | 'about') => void;
+  onLogout: () => void;
   onAdoptPet: () => void;
   onAdoptPetInline: (petId: string) => void;
   onTogglePet: () => void;
@@ -238,6 +241,7 @@ export function EntryView({
   promptTemplates,
   defaultDesignSystemId,
   config,
+  currentUser,
   agents,
   skillsLoading = false,
   designSystemsLoading = false,
@@ -253,6 +257,7 @@ export function EntryView({
   onRenameProject,
   onChangeDefaultDesignSystem,
   onOpenSettings,
+  onLogout,
   onAdoptPet,
   onAdoptPetInline,
   onTogglePet,
@@ -478,11 +483,25 @@ export function EntryView({
     <div className="entry-shell">
       <AppChromeHeader
         actions={(
-          <SettingsIconButton
-            onClick={() => onOpenSettings()}
-            title={t('settings.title')}
-            ariaLabel={t('settings.title')}
-          />
+          <>
+            <span className="entry-user-pill" title={currentUser.email}>
+              {currentUser.role === 'admin' ? 'Admin' : currentUser.name}
+            </span>
+            <SettingsIconButton
+              onClick={() => onOpenSettings()}
+              title={t('settings.title')}
+              ariaLabel={t('settings.title')}
+            />
+            <button
+              type="button"
+              className="settings-icon-btn"
+              onClick={onLogout}
+              title="退出登录"
+              aria-label="退出登录"
+            >
+              <Icon name="log-out" size={17} />
+            </button>
+          </>
         )}
       />
       <div

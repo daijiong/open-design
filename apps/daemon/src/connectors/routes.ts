@@ -54,6 +54,7 @@ export interface RegisterConnectorRoutesOptions {
   projectsRoot?: string;
   authorizeToolRequest?: (req: Request, res: Response, operation: string) => ToolTokenGrant | null;
   requireLocalDaemonRequest?: RequestHandler;
+  requireAdmin?: RequestHandler;
   composio?: {
     clearDiscoveryCache: () => void;
   };
@@ -526,6 +527,7 @@ function renderConnectorConnectedHtml(connectorId: string): string {
 export function registerConnectorRoutes(app: Express, options: RegisterConnectorRoutesOptions): void {
   const service = options.service ?? connectorService;
   const requireLocalDaemonRequest: RequestHandler = options.requireLocalDaemonRequest ?? ((_req, _res, next) => next());
+  const requireAdmin: RequestHandler = options.requireAdmin ?? ((_req, _res, next) => next());
 
   app.get('/api/connectors', async (_req: Request, res: Response) => {
     try {
@@ -565,7 +567,7 @@ export function registerConnectorRoutes(app: Express, options: RegisterConnector
     }
   });
 
-  app.get('/api/connectors/composio/config', (_req: Request, res: Response) => {
+  app.get('/api/connectors/composio/config', requireAdmin, (_req: Request, res: Response) => {
     try {
       res.json(readPublicComposioConfig());
     } catch (err) {
@@ -573,7 +575,7 @@ export function registerConnectorRoutes(app: Express, options: RegisterConnector
     }
   });
 
-  app.put('/api/connectors/composio/config', requireLocalDaemonRequest, (req: Request, res: Response) => {
+  app.put('/api/connectors/composio/config', requireAdmin, requireLocalDaemonRequest, (req: Request, res: Response) => {
     try {
       const before = readComposioConfig();
       const cfg = writeComposioConfig(req.body);
@@ -608,7 +610,7 @@ export function registerConnectorRoutes(app: Express, options: RegisterConnector
     }
   });
 
-  app.post('/api/connectors/auth-configs/prepare', requireLocalDaemonRequest, async (req: Request, res: Response) => {
+  app.post('/api/connectors/auth-configs/prepare', requireAdmin, requireLocalDaemonRequest, async (req: Request, res: Response) => {
     try {
       const body = isPlainObject(req.body) ? req.body : {};
       const connectorIds = Array.isArray(body.connectorIds)
@@ -624,7 +626,7 @@ export function registerConnectorRoutes(app: Express, options: RegisterConnector
     }
   });
 
-  app.post('/api/connectors/:connectorId/connect', requireLocalDaemonRequest, async (req: Request, res: Response) => {
+  app.post('/api/connectors/:connectorId/connect', requireAdmin, requireLocalDaemonRequest, async (req: Request, res: Response) => {
     try {
       const connectorId = req.params.connectorId;
       if (!connectorId) return options.sendApiError(res, 400, 'CONNECTOR_NOT_FOUND', 'connectorId is required');
@@ -673,7 +675,7 @@ export function registerConnectorRoutes(app: Express, options: RegisterConnector
     }
   });
 
-  app.post('/api/connectors/:connectorId/authorization/cancel', requireLocalDaemonRequest, async (req: Request, res: Response) => {
+  app.post('/api/connectors/:connectorId/authorization/cancel', requireAdmin, requireLocalDaemonRequest, async (req: Request, res: Response) => {
     try {
       const connectorId = req.params.connectorId;
       if (!connectorId) return options.sendApiError(res, 400, 'CONNECTOR_NOT_FOUND', 'connectorId is required');
@@ -683,7 +685,7 @@ export function registerConnectorRoutes(app: Express, options: RegisterConnector
     }
   });
 
-  app.delete('/api/connectors/:connectorId/connection', requireLocalDaemonRequest, async (req: Request, res: Response) => {
+  app.delete('/api/connectors/:connectorId/connection', requireAdmin, requireLocalDaemonRequest, async (req: Request, res: Response) => {
     try {
       const connectorId = req.params.connectorId;
       if (!connectorId) return options.sendApiError(res, 400, 'CONNECTOR_NOT_FOUND', 'connectorId is required');

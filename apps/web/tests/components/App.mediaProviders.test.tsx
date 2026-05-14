@@ -53,6 +53,19 @@ vi.mock('../../src/components/pet/pets', () => ({
   migrateCustomPetAtlas: vi.fn().mockResolvedValue(null),
 }));
 
+vi.mock('../../src/state/auth', () => ({
+  fetchCurrentUser: vi.fn().mockResolvedValue({
+    id: 'admin-user',
+    email: 'admin@example.com',
+    name: 'Admin',
+    role: 'admin',
+    status: 'active',
+    createdAt: 1,
+    updatedAt: 1,
+  }),
+  logoutUser: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock('../../src/components/SettingsDialog', () => ({
   SettingsDialog: ({
     initial,

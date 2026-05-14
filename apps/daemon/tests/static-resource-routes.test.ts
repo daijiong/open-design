@@ -36,6 +36,9 @@ describe('static resource mutation routes', () => {
             sendLiveArtifactRouteError: () => undefined,
             sendMulterError: () => undefined,
           },
+          auth: {
+            requireAdmin: (_req: unknown, _res: unknown, next: () => void) => next(),
+          },
           paths: {
             ARTIFACTS_DIR: path.join(tempRoot, 'artifacts'),
             BUNDLED_PETS_DIR: path.join(tempRoot, 'pets'),

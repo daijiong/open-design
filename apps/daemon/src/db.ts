@@ -53,12 +53,42 @@ function migrate(db: SqliteDb): void {
     CREATE TABLE IF NOT EXISTS projects (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
+      owner_user_id TEXT,
       skill_id TEXT,
       design_system_id TEXT,
       pending_prompt TEXT,
       metadata_json TEXT,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      role TEXT NOT NULL CHECK (role IN ('admin', 'member')),
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled', 'pending')),
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      last_login_at INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      expires_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      last_seen_at INTEGER,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS user_preferences (
+      user_id TEXT PRIMARY KEY,
+      prefs_json TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS templates (
@@ -203,6 +233,15 @@ function migrate(db: SqliteDb): void {
   if (!cols.some((c: DbRow) => c.name === 'custom_instructions')) {
     db.exec(`ALTER TABLE projects ADD COLUMN custom_instructions TEXT`);
   }
+  if (!cols.some((c: DbRow) => c.name === 'owner_user_id')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN owner_user_id TEXT`);
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_projects_owner_updated
+    ON projects(owner_user_id, updated_at DESC)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_sessions_token
+    ON sessions(token_hash)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_sessions_user
+    ON sessions(user_id)`);
   const messageCols = db.prepare(`PRAGMA table_info(messages)`).all() as DbRow[];
   if (!messageCols.some((c: DbRow) => c.name === 'agent_id')) {
     db.exec(`ALTER TABLE messages ADD COLUMN agent_id TEXT`);
@@ -416,24 +455,247 @@ function stringifyJsonObjectOrNull(value: unknown) {
   return Object.keys(value).length > 0 ? JSON.stringify(value) : null;
 }
 
+// ---------- users / sessions ----------
+
+const USER_COLS = `id, email, name, password_hash AS passwordHash,
+  role, status, created_at AS createdAt, updated_at AS updatedAt,
+  last_login_at AS lastLoginAt`;
+
+export function countUsers(db: SqliteDb): number {
+  const row = db.prepare(`SELECT COUNT(*) AS count FROM users`).get() as DbRow;
+  return Number(row?.count ?? 0);
+}
+
+export function countActiveAdmins(db: SqliteDb): number {
+  const row = db
+    .prepare(`SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND status = 'active'`)
+    .get() as DbRow;
+  return Number(row?.count ?? 0);
+}
+
+export function listUsers(db: SqliteDb) {
+  const rows = db
+    .prepare(`SELECT ${USER_COLS} FROM users ORDER BY created_at DESC`)
+    .all() as DbRow[];
+  return rows.map(normalizeUser);
+}
+
+export function getUser(db: SqliteDb, id: string) {
+  const row = db
+    .prepare(`SELECT ${USER_COLS} FROM users WHERE id = ?`)
+    .get(id) as DbRow | undefined;
+  return row ? normalizeUser(row) : null;
+}
+
+export function getUserByEmail(db: SqliteDb, email: string) {
+  const row = db
+    .prepare(`SELECT ${USER_COLS} FROM users WHERE lower(email) = lower(?)`)
+    .get(email) as DbRow | undefined;
+  return row ? normalizeUser(row) : null;
+}
+
+export function insertUser(db: SqliteDb, user: DbRow) {
+  db.prepare(
+    `INSERT INTO users
+       (id, email, name, password_hash, role, status, created_at, updated_at, last_login_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    user.id,
+    user.email,
+    user.name,
+    user.passwordHash,
+    user.role,
+    user.status ?? 'active',
+    user.createdAt,
+    user.updatedAt,
+    user.lastLoginAt ?? null,
+  );
+  return getUser(db, user.id);
+}
+
+export function updateUser(db: SqliteDb, id: string, patch: DbRow) {
+  const existing = getUser(db, id);
+  if (!existing) return null;
+  const merged = {
+    ...existing,
+    ...patch,
+    updatedAt: typeof patch.updatedAt === 'number' ? patch.updatedAt : Date.now(),
+  };
+  db.prepare(
+    `UPDATE users
+        SET email = ?,
+            name = ?,
+            password_hash = ?,
+            role = ?,
+            status = ?,
+            updated_at = ?,
+            last_login_at = ?
+      WHERE id = ?`,
+  ).run(
+    merged.email,
+    merged.name,
+    merged.passwordHash,
+    merged.role,
+    merged.status,
+    merged.updatedAt,
+    merged.lastLoginAt ?? null,
+    id,
+  );
+  return getUser(db, id);
+}
+
+export function deleteSessionsForUser(db: SqliteDb, userId: string) {
+  db.prepare(`DELETE FROM sessions WHERE user_id = ?`).run(userId);
+}
+
+export function insertSession(db: SqliteDb, session: DbRow) {
+  db.prepare(
+    `INSERT INTO sessions
+       (id, user_id, token_hash, expires_at, created_at, last_seen_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(
+    session.id,
+    session.userId,
+    session.tokenHash,
+    session.expiresAt,
+    session.createdAt,
+    session.lastSeenAt ?? null,
+  );
+  return getSessionByTokenHash(db, session.tokenHash);
+}
+
+export function getSessionByTokenHash(db: SqliteDb, tokenHash: string) {
+  const row = db
+    .prepare(
+      `SELECT s.id AS sessionId, s.user_id AS userId, s.token_hash AS tokenHash,
+              s.expires_at AS expiresAt, s.created_at AS createdAt,
+              s.last_seen_at AS lastSeenAt,
+              u.id AS id, u.email AS email, u.name AS name,
+              u.password_hash AS passwordHash, u.role AS role, u.status AS status,
+              u.created_at AS userCreatedAt, u.updated_at AS userUpdatedAt,
+              u.last_login_at AS userLastLoginAt
+         FROM sessions s
+         JOIN users u ON u.id = s.user_id
+        WHERE s.token_hash = ?`,
+    )
+    .get(tokenHash) as DbRow | undefined;
+  return row ? normalizeSession(row) : null;
+}
+
+export function touchSession(db: SqliteDb, sessionId: string, now = Date.now()) {
+  db.prepare(`UPDATE sessions SET last_seen_at = ? WHERE id = ?`).run(now, sessionId);
+}
+
+export function deleteSessionByTokenHash(db: SqliteDb, tokenHash: string) {
+  db.prepare(`DELETE FROM sessions WHERE token_hash = ?`).run(tokenHash);
+}
+
+export function deleteExpiredSessions(db: SqliteDb, now = Date.now()) {
+  db.prepare(`DELETE FROM sessions WHERE expires_at <= ?`).run(now);
+}
+
+export function claimUnownedProjects(db: SqliteDb, userId: string) {
+  db.prepare(`UPDATE projects SET owner_user_id = ? WHERE owner_user_id IS NULL`).run(userId);
+}
+
+export function getUserPreferences(db: SqliteDb, userId: string) {
+  const row = db
+    .prepare(`SELECT prefs_json AS prefsJson FROM user_preferences WHERE user_id = ?`)
+    .get(userId) as DbRow | undefined;
+  if (!row?.prefsJson) return {};
+  try {
+    return JSON.parse(row.prefsJson);
+  } catch {
+    return {};
+  }
+}
+
+export function setUserPreferences(db: SqliteDb, userId: string, prefs: JsonObject) {
+  db.prepare(
+    `INSERT INTO user_preferences (user_id, prefs_json, updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(user_id) DO UPDATE SET
+       prefs_json = excluded.prefs_json,
+       updated_at = excluded.updated_at`,
+  ).run(userId, JSON.stringify(prefs), Date.now());
+  return getUserPreferences(db, userId);
+}
+
+function normalizeUser(row: DbRow) {
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name,
+    passwordHash: row.passwordHash,
+    role: row.role,
+    status: row.status,
+    createdAt: Number(row.createdAt),
+    updatedAt: Number(row.updatedAt),
+    lastLoginAt: row.lastLoginAt == null ? undefined : Number(row.lastLoginAt),
+  };
+}
+
+function normalizeSession(row: DbRow) {
+  const user = normalizeUser({
+    id: row.id,
+    email: row.email,
+    name: row.name,
+    passwordHash: row.passwordHash,
+    role: row.role,
+    status: row.status,
+    createdAt: row.userCreatedAt,
+    updatedAt: row.userUpdatedAt,
+    lastLoginAt: row.userLastLoginAt,
+  });
+  return {
+    id: row.sessionId,
+    userId: row.userId,
+    tokenHash: row.tokenHash,
+    expiresAt: Number(row.expiresAt),
+    createdAt: Number(row.createdAt),
+    lastSeenAt: row.lastSeenAt == null ? undefined : Number(row.lastSeenAt),
+    user,
+  };
+}
+
 // ---------- projects ----------
 
-const PROJECT_COLS = `id, name, skill_id AS skillId,
-  design_system_id AS designSystemId,
-  pending_prompt AS pendingPrompt,
-  metadata_json AS metadataJson,
-  custom_instructions AS customInstructions,
-  created_at AS createdAt,
-  updated_at AS updatedAt`;
+const PROJECT_COLS = `p.id AS id, p.name AS name, p.skill_id AS skillId,
+  p.owner_user_id AS ownerUserId,
+  p.design_system_id AS designSystemId,
+  p.pending_prompt AS pendingPrompt,
+  p.metadata_json AS metadataJson,
+  p.custom_instructions AS customInstructions,
+  p.created_at AS createdAt,
+  p.updated_at AS updatedAt`;
 
 export function listProjects(db: SqliteDb) {
   const rows = db
     .prepare(
-      `SELECT ${PROJECT_COLS}
-         FROM projects
-        ORDER BY updated_at DESC`,
+      `SELECT ${PROJECT_COLS},
+              u.name AS ownerName,
+              u.email AS ownerEmail
+         FROM projects p
+         LEFT JOIN users u ON u.id = p.owner_user_id
+        ORDER BY p.updated_at DESC`,
     )
     .all() as DbRow[];
+  return rows.map(normalizeProject);
+}
+
+export function listProjectsForUser(db: SqliteDb, user: DbRow | null) {
+  if (!user || user.role === 'admin') return listProjects(db);
+  const rows = db
+    .prepare(
+      `SELECT ${PROJECT_COLS},
+              u.name AS ownerName,
+              u.email AS ownerEmail
+         FROM projects p
+         LEFT JOIN users u ON u.id = p.owner_user_id
+        WHERE p.owner_user_id = ?
+        ORDER BY p.updated_at DESC`,
+    )
+    .all(user.id) as DbRow[];
   return rows.map(normalizeProject);
 }
 
@@ -499,7 +761,14 @@ export function listProjectsAwaitingInput(db: SqliteDb) {
 
 export function getProject(db: SqliteDb, id: string) {
   const row = db
-    .prepare(`SELECT ${PROJECT_COLS} FROM projects WHERE id = ?`)
+    .prepare(
+      `SELECT ${PROJECT_COLS},
+              u.name AS ownerName,
+              u.email AS ownerEmail
+         FROM projects p
+         LEFT JOIN users u ON u.id = p.owner_user_id
+        WHERE p.id = ?`,
+    )
     .get(id) as DbRow | undefined;
   return row ? normalizeProject(row) : null;
 }
@@ -507,12 +776,13 @@ export function getProject(db: SqliteDb, id: string) {
 export function insertProject(db: SqliteDb, p: DbRow) {
   db.prepare(
     `INSERT INTO projects
-       (id, name, skill_id, design_system_id, pending_prompt,
+       (id, name, owner_user_id, skill_id, design_system_id, pending_prompt,
         metadata_json, custom_instructions, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     p.id,
     p.name,
+    p.ownerUserId ?? null,
     p.skillId ?? null,
     p.designSystemId ?? null,
     p.pendingPrompt ?? null,
@@ -536,6 +806,7 @@ export function updateProject(db: SqliteDb, id: string, patch: DbRow) {
     `UPDATE projects
         SET name = ?,
             skill_id = ?,
+            owner_user_id = ?,
             design_system_id = ?,
             pending_prompt = ?,
             metadata_json = ?,
@@ -545,6 +816,7 @@ export function updateProject(db: SqliteDb, id: string, patch: DbRow) {
   ).run(
     merged.name,
     merged.skillId ?? null,
+    merged.ownerUserId ?? null,
     merged.designSystemId ?? null,
     merged.pendingPrompt ?? null,
     merged.metadata ? JSON.stringify(merged.metadata) : null,
@@ -571,6 +843,9 @@ function normalizeProject(row: DbRow) {
   return {
     id: row.id,
     name: row.name,
+    ownerUserId: row.ownerUserId ?? null,
+    ownerName: row.ownerName ?? undefined,
+    ownerEmail: row.ownerEmail ?? undefined,
     skillId: row.skillId,
     designSystemId: row.designSystemId,
     pendingPrompt: row.pendingPrompt ?? undefined,

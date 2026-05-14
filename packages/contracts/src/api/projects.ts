@@ -118,6 +118,9 @@ export interface ProjectMetadata {
 export interface Project {
   id: string;
   name: string;
+  ownerUserId?: string | null;
+  ownerName?: string;
+  ownerEmail?: string;
   skillId: string | null;
   designSystemId: string | null;
   createdAt: number;

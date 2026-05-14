@@ -18,6 +18,9 @@ export function registerImportRoutes(app: Express, ctx: RegisterImportRoutesDeps
   const { PROJECTS_DIR, RUNTIME_DATA_DIR_CANONICAL } = ctx.paths;
   const { importClaudeDesignZip, projectDir, detectEntryFile } = ctx.imports;
   const {
+    currentUser,
+    requireAuth,
+    requireProjectAccess,
     consumedImportNonces,
     desktopAuthSecret,
     isDesktopAuthGateActive,
@@ -29,6 +32,7 @@ export function registerImportRoutes(app: Express, ctx: RegisterImportRoutesDeps
   const { setTabs } = ctx.projectFiles;
   app.post(
     '/api/import/claude-design',
+    requireAuth,
     importUpload.single('file'),
     async (req, res) => {
       try {
@@ -42,6 +46,7 @@ export function registerImportRoutes(app: Express, ctx: RegisterImportRoutesDeps
         }
         const id = randomId();
         const now = Date.now();
+        const user = currentUser(req);
         const baseName =
           originalName.replace(/\.zip$/i, '').trim() || 'Claude Design import';
         const imported = await importClaudeDesignZip(
@@ -53,6 +58,7 @@ export function registerImportRoutes(app: Express, ctx: RegisterImportRoutesDeps
         const project = insertProject(db, {
           id,
           name: baseName,
+          ownerUserId: user?.id ?? null,
           skillId: null,
           designSystemId: null,
           pendingPrompt: `Imported from Claude Design ZIP: ${originalName}. Continue editing ${imported.entryFile}.`,
@@ -92,7 +98,7 @@ export function registerImportRoutes(app: Express, ctx: RegisterImportRoutesDeps
   // No copy, no shadow tree — the user owns the workspace and is
   // responsible for their own version control (git, time machine, etc.),
   // mirroring how Cursor / Claude Code / Aider behave.
-  app.post('/api/import/folder', async (req, res) => {
+  app.post('/api/import/folder', requireAuth, async (req, res) => {
     try {
       const { baseDir, name, skillId, designSystemId } = req.body || {};
       if (typeof baseDir !== 'string' || !baseDir.trim()) {
@@ -180,6 +186,7 @@ export function registerImportRoutes(app: Express, ctx: RegisterImportRoutesDeps
 
       const id = randomId();
       const now = Date.now();
+      const user = currentUser(req);
       const projectName =
         typeof name === 'string' && name.trim()
           ? name.trim()
@@ -189,6 +196,7 @@ export function registerImportRoutes(app: Express, ctx: RegisterImportRoutesDeps
       const project = insertProject(db, {
         id,
         name: projectName,
+        ownerUserId: user?.id ?? null,
         skillId: skillId ?? null,
         designSystemId: designSystemId ?? null,
         pendingPrompt: null,
@@ -222,13 +230,13 @@ export function registerImportRoutes(app: Express, ctx: RegisterImportRoutesDeps
 
 }
 
-export interface RegisterProjectExportRoutesDeps extends RouteDeps<'db' | 'http' | 'paths' | 'projectStore' | 'exports' | 'projectFiles' | 'validation'> {}
+export interface RegisterProjectExportRoutesDeps extends RouteDeps<'db' | 'http' | 'auth' | 'paths' | 'projectStore' | 'exports' | 'projectFiles' | 'validation'> {}
 
 export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectExportRoutesDeps) {
   const { db } = ctx;
   const { sendApiError } = ctx.http;
+  const { requireProjectAccess } = ctx.auth;
   const { PROJECTS_DIR } = ctx.paths;
-  const { getProject } = ctx.projectStore;
   const { readProjectFile, resolveProjectFilePath } = ctx.projectFiles;
   const { isSafeId } = ctx.validation;
   const {
@@ -247,7 +255,8 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
   app.get('/api/projects/:id/archive', async (req, res) => {
     try {
       const root = typeof req.query?.root === 'string' ? req.query.root : '';
-      const project = getProject(db, req.params.id);
+      const project = requireProjectAccess(req, res, req.params.id);
+      if (!project) return;
       const { buffer, baseName } = await buildProjectArchive(
         PROJECTS_DIR,
         req.params.id,
@@ -289,7 +298,8 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
         sendApiError(res, 400, 'BAD_REQUEST', 'files must be a non-empty array');
         return;
       }
-      const project = getProject(db, req.params.id);
+      const project = requireProjectAccess(req, res, req.params.id);
+      if (!project) return;
       const { buffer } = await buildBatchArchive(
         PROJECTS_DIR,
         req.params.id,
@@ -328,6 +338,8 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
       );
     }
     try {
+      const project = requireProjectAccess(req, res, req.params.id);
+      if (!project) return;
       const { fileName, title, deck } = req.body || {};
       if (typeof fileName !== 'string' || fileName.length === 0) {
         return sendApiError(res, 400, 'BAD_REQUEST', 'fileName required');
@@ -396,7 +408,8 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
         );
       }
 
-      const project = getProject(db, req.params.id);
+      const project = requireProjectAccess(req, res, req.params.id);
+      if (!project) return;
       const relPath = (req.params as any)[0];
 
       // PR #1312 round-5 (lefarcen P2): stat the owner file BEFORE
@@ -526,13 +539,13 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
 
 }
 
-export interface RegisterFinalizeRoutesDeps extends RouteDeps<'db' | 'http' | 'paths' | 'projectStore' | 'validation' | 'finalize'> {}
+export interface RegisterFinalizeRoutesDeps extends RouteDeps<'db' | 'http' | 'auth' | 'paths' | 'projectStore' | 'validation' | 'finalize'> {}
 
 export function registerFinalizeRoutes(app: Express, ctx: RegisterFinalizeRoutesDeps) {
   const { db } = ctx;
   const { sendApiError } = ctx.http;
+  const { requireProjectAccess } = ctx.auth;
   const { PROJECTS_DIR, DESIGN_SYSTEMS_DIR } = ctx.paths;
-  const { getProject } = ctx.projectStore;
   const { isSafeId, validateExternalApiBaseUrl } = ctx.validation;
   const { finalizeDesignPackage, FinalizePackageLockedError, FinalizeUpstreamError, redactSecrets } = ctx.finalize;
   app.post('/api/projects/:id/finalize/anthropic', async (req, res) => {
@@ -572,9 +585,9 @@ export function registerFinalizeRoutes(app: Express, ctx: RegisterFinalizeRoutes
         return sendApiError(res, 400, 'BAD_REQUEST', 'maxTokens must be a positive number when provided');
       }
 
-      const project = getProject(db, req.params.id);
+      const project = requireProjectAccess(req, res, req.params.id);
       if (!project) {
-        return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found');
+        return;
       }
 
       const finalizeAbort = new AbortController();

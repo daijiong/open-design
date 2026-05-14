@@ -29,6 +29,7 @@ type IconName =
   | 'kanban'
   | 'languages'
   | 'link'
+  | 'log-out'
   | 'mic'
   | 'minus'
   | 'more-horizontal'
@@ -52,6 +53,7 @@ type IconName =
   | 'thumbs-up'
   | 'tweaks'
   | 'upload'
+  | 'users'
   | 'trash'
   | 'zoom-in'
   | 'zoom-out';
@@ -286,12 +288,29 @@ export function Icon({ name, size = 14, strokeWidth = 1.6, ...rest }: Props) {
           <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 1 0 7.07 7.07l1.71-1.71" />
         </svg>
       );
+    case 'log-out':
+      return (
+        <svg {...common}>
+          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+          <path d="m16 17 5-5-5-5" />
+          <path d="M21 12H9" />
+        </svg>
+      );
     case 'mic':
       return (
         <svg {...common}>
           <rect x="9" y="2" width="6" height="11" rx="3" />
           <path d="M19 10v1a7 7 0 0 1-14 0v-1" />
           <path d="M12 18v3" />
+        </svg>
+      );
+    case 'users':
+      return (
+        <svg {...common}>
+          <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+          <circle cx="9" cy="7" r="4" />
+          <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+          <path d="M16 3.13a4 4 0 0 1 0 7.75" />
         </svg>
       );
     case 'minus':

@@ -1,18 +1,18 @@
 import type { Express } from 'express';
 import type { RouteDeps } from './server-context.js';
 
-export interface RegisterMediaRoutesDeps extends RouteDeps<'db' | 'http' | 'paths' | 'ids' | 'media' | 'appConfig' | 'orbit' | 'nativeDialogs' | 'projectStore' | 'projectFiles' | 'conversations' | 'research'> {}
+export interface RegisterMediaRoutesDeps extends RouteDeps<'db' | 'http' | 'auth' | 'paths' | 'ids' | 'media' | 'appConfig' | 'orbit' | 'nativeDialogs' | 'projectStore' | 'projectFiles' | 'conversations' | 'research'> {}
 
 export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) {
   const { db } = ctx;
   const { sendApiError, requireLocalDaemonRequest, isLocalSameOrigin, resolvedPortRef } = ctx.http;
+  const { currentUser, requireAuth, requireAdmin, requireProjectAccess } = ctx.auth;
   const { PROJECT_ROOT, PROJECTS_DIR, RUNTIME_DATA_DIR } = ctx.paths;
   const { randomUUID } = ctx.ids;
   const { MEDIA_PROVIDERS, IMAGE_MODELS, VIDEO_MODELS, AUDIO_MODELS_BY_KIND, MEDIA_ASPECTS, VIDEO_LENGTHS_SEC, AUDIO_DURATIONS_SEC, readMaskedConfig, writeConfig, generateMedia, createMediaTask, persistMediaTask, appendTaskProgress, notifyTaskWaiters, getLiveMediaTask, mediaTaskSnapshot, listMediaTasksByProject, listElevenLabsVoiceOptions } = ctx.media;
   const { readAppConfig, writeAppConfig } = ctx.appConfig;
   const { orbitService } = ctx.orbit;
   const { openNativeFolderDialog } = ctx.nativeDialogs;
-  const { getProject } = ctx.projectStore;
   const { writeProjectFile } = ctx.projectFiles;
   const { insertConversation, upsertMessage } = ctx.conversations;
   const { searchResearch, ResearchError } = ctx.research;
@@ -29,7 +29,7 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
     });
   });
 
-  app.get('/api/media/config', async (_req, res) => {
+  app.get('/api/media/config', requireAdmin, async (_req, res) => {
     try {
       const cfg = await readMaskedConfig(PROJECT_ROOT);
       res.json(cfg);
@@ -40,7 +40,7 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
     }
   });
 
-  app.put('/api/media/config', async (req, res) => {
+  app.put('/api/media/config', requireAdmin, async (req, res) => {
     try {
       const cfg = await writeConfig(PROJECT_ROOT, req.body);
       res.json(cfg);
@@ -68,13 +68,18 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
     }
   });
 
-  app.get('/api/app-config', async (req, res) => {
+  app.get('/api/app-config', requireAuth, async (req, res) => {
     if (!isLocalSameOrigin(req, getResolvedPort())) {
       return res.status(403).json({ error: 'cross-origin request rejected' });
     }
     try {
       const config = await readAppConfig(RUNTIME_DATA_DIR);
-      res.json({ config });
+      if (currentUser(req)?.role === 'admin') {
+        res.json({ config });
+        return;
+      }
+      const { agentCliEnv: _agentCliEnv, ...memberConfig } = config;
+      res.json({ config: memberConfig });
     } catch (err: any) {
       res
         .status(500)
@@ -82,7 +87,7 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
     }
   });
 
-  app.put('/api/app-config', async (req, res) => {
+  app.put('/api/app-config', requireAdmin, async (req, res) => {
     if (!isLocalSameOrigin(req, getResolvedPort())) {
       return res.status(403).json({ error: 'cross-origin request rejected' });
     }
@@ -97,7 +102,7 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
     }
   });
 
-  app.get('/api/orbit/status', async (req, res) => {
+  app.get('/api/orbit/status', requireAdmin, async (req, res) => {
     if (!isLocalSameOrigin(req, getResolvedPort())) {
       return res.status(403).json({ error: 'cross-origin request rejected' });
     }
@@ -110,7 +115,7 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
     }
   });
 
-  app.post('/api/orbit/run', async (req, res) => {
+  app.post('/api/orbit/run', requireAdmin, async (req, res) => {
     if (!isLocalSameOrigin(req, getResolvedPort())) {
       return res.status(403).json({ error: 'cross-origin request rejected' });
     }
@@ -148,8 +153,8 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
 
     try {
       const projectId = req.params.id;
-      const project = getProject(db, projectId);
-      if (!project) return res.status(404).json({ error: 'project not found' });
+      const project = requireProjectAccess(req, res, projectId);
+      if (!project) return;
 
       const taskId = randomUUID();
       const task = createMediaTask(taskId, projectId, {
@@ -275,6 +280,7 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
     const taskId = req.params.id;
     const task = getLiveMediaTask(taskId);
     if (!task) return res.status(404).json({ error: 'task not found' });
+    if (task.projectId && !requireProjectAccess(req, res, task.projectId)) return;
 
     const since = Number.isFinite(req.body?.since) ? Number(req.body.since) : 0;
     const requestedTimeout = Number.isFinite(req.body?.timeoutMs)
@@ -314,6 +320,7 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
       return res.status(403).json({ error: 'cross-origin request rejected' });
     }
     const projectId = req.params.id;
+    if (!requireProjectAccess(req, res, projectId)) return;
     const includeDone =
       req.query.includeDone === '1' || req.query.includeDone === 'true';
     const tasks = listMediaTasksByProject(db, projectId, {

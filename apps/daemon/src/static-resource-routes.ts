@@ -21,7 +21,7 @@ import { readAppConfig } from './app-config.js';
 import { installFromTarget, uninstallById } from './library-install.js';
 import type { RouteDeps } from './server-context.js';
 
-export interface RegisterStaticResourceRoutesDeps extends RouteDeps<'http' | 'paths' | 'resources'> {}
+export interface RegisterStaticResourceRoutesDeps extends RouteDeps<'http' | 'auth' | 'paths' | 'resources'> {}
 
 export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticResourceRoutesDeps) {
   const {
@@ -43,6 +43,7 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
     mimeFor,
   } = ctx.resources;
   const { isLocalSameOrigin, resolvedPortRef, sendApiError } = ctx.http;
+  const { requireAdmin } = ctx.auth;
   const requireLocalOrigin = (req: any, res: any) => {
     if (isLocalSameOrigin(req, resolvedPortRef.current)) return true;
     sendApiError(res, 403, 'FORBIDDEN', 'local origin required');
@@ -120,7 +121,7 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
   // POST /api/skills/import — write a new SKILL.md under USER_SKILLS_DIR
   // from a UI-supplied body. The next /api/skills request surfaces it
   // automatically because listSkills walks USER_SKILLS_DIR first.
-  app.post('/api/skills/import', async (req, res) => {
+  app.post('/api/skills/import', requireAdmin, async (req, res) => {
     try {
       const result = await importUserSkill(USER_SKILLS_DIR, req.body || {});
       const skills = await listAllSkills();
@@ -154,7 +155,7 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
   // clone its side files into USER_SKILLS_DIR/<slug>/ so subsequent
   // /api/skills/:id/{files,example,assets/*} requests keep resolving
   // the bundled assets/references/scripts/examples). See PR #955 review.
-  app.put('/api/skills/:id', async (req, res) => {
+  app.put('/api/skills/:id', requireAdmin, async (req, res) => {
     try {
       const skills = await listAllSkills();
       const skill = findSkillById(skills, req.params.id);
@@ -551,7 +552,7 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
     }
   });
 
-  app.post('/api/skills/install', async (req, res) => {
+  app.post('/api/skills/install', requireAdmin, async (req, res) => {
     if (!requireLocalOrigin(req, res)) return;
     try {
       const result = await installFromTarget(req.body, USER_SKILLS_DIR, 'skill');
@@ -578,7 +579,7 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
     }
   });
 
-  app.delete('/api/skills/:id', async (req, res) => {
+  app.delete('/api/skills/:id', requireAdmin, async (req, res) => {
     if (!requireLocalOrigin(req, res)) return;
     try {
       const result = await uninstallById(req.params.id, USER_SKILLS_DIR, SKILLS_DIR, 'skill');
@@ -589,7 +590,7 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
     }
   });
 
-  app.post('/api/design-systems/install', async (req, res) => {
+  app.post('/api/design-systems/install', requireAdmin, async (req, res) => {
     if (!requireLocalOrigin(req, res)) return;
     try {
       const result = await installFromTarget(req.body, USER_DESIGN_SYSTEMS_DIR, 'design-system');
@@ -609,7 +610,7 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
     }
   });
 
-  app.delete('/api/design-systems/:id', async (req, res) => {
+  app.delete('/api/design-systems/:id', requireAdmin, async (req, res) => {
     if (!requireLocalOrigin(req, res)) return;
     try {
       const result = await uninstallById(

@@ -7,6 +7,8 @@ import {
   fidelityToTracking,
 } from '@open-design/contracts/analytics';
 import { EntryView } from './components/EntryView';
+import { AuthPage } from './components/AuthPage';
+import { CenteredLoader } from './components/Loading';
 import type { CreateInput } from './components/NewProjectPanel';
 import { MemoryToast } from './components/MemoryToast';
 import { PetOverlay } from './components/pet/PetOverlay';
@@ -42,6 +44,7 @@ import {
   syncConfigToDaemon,
   syncMediaProvidersToDaemon,
 } from './state/config';
+import { fetchCurrentUser, logoutUser } from './state/auth';
 import { applyAppearanceToDocument } from './state/appearance';
 import { isMacPlatform } from './utils/platform';
 import {
@@ -60,6 +63,7 @@ import type {
   AgentInfo,
   AppConfig,
   AppVersionInfo,
+  CurrentUser,
   DesignSystemSummary,
   Project,
   ProjectTemplate,
@@ -144,6 +148,8 @@ export function resolveSettingsCloseConfig(
 
 export function App() {
   const { t } = useI18n();
+  const [authChecked, setAuthChecked] = useState(false);
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [config, setConfig] = useState<AppConfig>(() => loadConfig());
   const configRef = useRef(config);
   configRef.current = config;
@@ -210,6 +216,18 @@ export function App() {
   // `config.telemetry?.metrics` so a freshly-opted-in user gets the event
   // on their next reload, and a declined user fires nothing.
   const appLaunchFiredRef = useRef(false);
+  useEffect(() => {
+    let cancelled = false;
+    void fetchCurrentUser().then((user) => {
+      if (cancelled) return;
+      setCurrentUser(user);
+      setAuthChecked(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     if (appLaunchFiredRef.current) return;
     if (config.telemetry?.metrics !== true) return;
@@ -279,6 +297,8 @@ export function App() {
   // which made the slowest endpoint (typically `/api/agents` on cold start)
   // gate every tab including the ones that don't need agents at all.
   useEffect(() => {
+    if (!authChecked || !currentUser) return;
+    const bootUser = currentUser;
     let cancelled = false;
     (async () => {
       const alive = await daemonIsLive();
@@ -397,6 +417,7 @@ export function App() {
           }
           saveConfig(next);
           if (
+            bootUser.role === 'admin' &&
             daemonMediaProvidersResult.status === 'ok' &&
             migratedLocalMediaProviders &&
             hasAnyConfiguredProvider(next.mediaProviders)
@@ -408,8 +429,8 @@ export function App() {
           // Migrate localStorage prefs to daemon on first boot with the new
           // endpoint. If daemon already had values the merge above used them;
           // writing back is idempotent and keeps both sides in sync.
-          void syncConfigToDaemon(next);
-          void syncComposioConfigToDaemon(next.composio);
+          if (bootUser.role === 'admin') void syncConfigToDaemon(next);
+          if (bootUser.role === 'admin') void syncComposioConfigToDaemon(next.composio);
 
           // Pop the onboarding modal only on the first run. Once the user
           // has saved or skipped past it once, we trust their stored config
@@ -434,7 +455,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [authChecked, currentUser]);
 
   // Auto-pick the first available agent once both the daemon-stored config
   // and the agents listing have landed. Splitting this out of bootstrap
@@ -450,10 +471,10 @@ export function App() {
       if (prev.agentId) return prev;
       const next: AppConfig = { ...prev, agentId: firstAvailable.id };
       saveConfig(next);
-      void syncConfigToDaemon(next);
+      if (currentUser?.role === 'admin') void syncConfigToDaemon(next);
       return next;
     });
-  }, [daemonConfigLoaded, agentsLoading, agents, config.agentId]);
+  }, [daemonConfigLoaded, agentsLoading, agents, config.agentId, currentUser?.role]);
 
   // Auto-pick the default design system the same way — only after daemon
   // config has merged so we never overwrite a daemon-stored selection.
@@ -467,10 +488,10 @@ export function App() {
       if (prev.designSystemId) return prev;
       const next: AppConfig = { ...prev, designSystemId: id };
       saveConfig(next);
-      void syncConfigToDaemon(next);
+      if (currentUser?.role === 'admin') void syncConfigToDaemon(next);
       return next;
     });
-  }, [daemonConfigLoaded, dsLoading, designSystems, config.designSystemId]);
+  }, [daemonConfigLoaded, dsLoading, designSystems, config.designSystemId, currentUser?.role]);
 
   // One-shot self-healing migration for pets adopted before the
   // overlay learned atlas-row switching. If the stored pet is a
@@ -557,6 +578,7 @@ export function App() {
     latestPersistedConfigRef.current = persisted;
     saveConfig(persisted);
     setConfig(persisted);
+    if (currentUser?.role !== 'admin') return;
     const shouldSyncMediaProviders =
       daemonMediaProvidersFetchState === 'ok'
       && shouldSyncMediaProvidersOnSave(persisted.mediaProviders, {
@@ -572,7 +594,7 @@ export function App() {
         : Promise.resolve(),
       syncConfigToDaemon(persisted),
     ]);
-  }, [daemonMediaProviders, daemonMediaProvidersFetchState]);
+  }, [currentUser?.role, daemonMediaProviders, daemonMediaProvidersFetchState]);
 
   /**
    * Explicit Composio API-key save. Called from the section-local
@@ -583,6 +605,9 @@ export function App() {
    */
   const handleConfigPersistComposioKey = useCallback(
     async (composio: AppConfig['composio']) => {
+      if (currentUser?.role !== 'admin') {
+        throw new Error('只有管理员可以保存连接器配置。');
+      }
       const next = await persistComposioConfigChange(config, composio);
       setConfig((curr) => {
         const merged: AppConfig = { ...curr, composio: next.composio };
@@ -590,7 +615,7 @@ export function App() {
         return merged;
       });
     },
-    [config],
+    [config, currentUser?.role],
   );
 
   const handleModeChange = useCallback(
@@ -606,10 +631,10 @@ export function App() {
     (agentId: string) => {
       const next = { ...config, agentId };
       saveConfig(next);
-      void syncConfigToDaemon(next);
+      if (currentUser?.role === 'admin') void syncConfigToDaemon(next);
       setConfig(next);
     },
-    [config],
+    [config, currentUser?.role],
   );
 
   const handleAgentModelChange = useCallback(
@@ -622,25 +647,26 @@ export function App() {
       };
       const next = { ...config, agentModels: nextAgentModels };
       saveConfig(next);
-      void syncConfigToDaemon(next);
+      if (currentUser?.role === 'admin') void syncConfigToDaemon(next);
       setConfig(next);
     },
-    [config],
+    [config, currentUser?.role],
   );
 
   const handleChangeDefaultDesignSystem = useCallback(
     (designSystemId: string) => {
       const next = { ...config, designSystemId };
       saveConfig(next);
-      void syncConfigToDaemon(next);
+      if (currentUser?.role === 'admin') void syncConfigToDaemon(next);
       setConfig(next);
     },
-    [config],
+    [config, currentUser?.role],
   );
 
   const refreshAgents = useCallback(
     async (options?: { throwOnError?: boolean; agentCliEnv?: AppConfig['agentCliEnv'] }) => {
       if (options && Object.prototype.hasOwnProperty.call(options, 'agentCliEnv')) {
+        if (currentUser?.role !== 'admin') return agents;
         const nextConfig = { ...config, agentCliEnv: options.agentCliEnv ?? {} };
         saveConfig(nextConfig);
         await syncConfigToDaemon(nextConfig);
@@ -650,7 +676,7 @@ export function App() {
       setAgents(next);
       return next;
     },
-    [config],
+    [agents, config, currentUser?.role],
   );
 
   const handleCreateProject = useCallback(
@@ -843,15 +869,25 @@ export function App() {
   }, [route, activeProject, projects, daemonLive]);
 
   const openSettings = useCallback((section: SettingsSection = 'execution') => {
+    const memberSections = new Set<SettingsSection>(['language', 'appearance', 'notifications', 'pet', 'privacy', 'about']);
     setSettingsWelcome(false);
-    setSettingsInitialSection(section);
+    setSettingsInitialSection(currentUser?.role === 'admin' || memberSections.has(section) ? section : 'appearance');
     setSettingsOpen(true);
-  }, []);
+  }, [currentUser?.role]);
 
   const openPetSettings = useCallback(() => {
     setSettingsWelcome(false);
     setSettingsInitialSection('pet');
     setSettingsOpen(true);
+  }, []);
+
+  const handleLogout = useCallback(() => {
+    void logoutUser().finally(() => {
+      setCurrentUser(null);
+      setProjects([]);
+      setTemplates([]);
+      navigate({ kind: 'home' }, { replace: true });
+    });
   }, []);
 
   const openMcpSettings = useCallback(() => {
@@ -976,6 +1012,24 @@ export function App() {
     [designSystems, config.disabledDesignSystems],
   );
 
+  if (!authChecked) {
+    return <CenteredLoader label="正在检查登录状态..." />;
+  }
+
+  if (!currentUser) {
+    const authMode = window.location.pathname.replace(/\/+$/, '') === '/register' ? 'register' : 'login';
+    return (
+      <AuthPage
+        initialMode={authMode}
+        onAuthenticated={(user) => {
+          setCurrentUser(user);
+          window.history.replaceState(null, '', '/');
+          window.dispatchEvent(new PopStateEvent('popstate'));
+        }}
+      />
+    );
+  }
+
   return (
     <>
       {activeProject ? (
@@ -1015,6 +1069,7 @@ export function App() {
           promptTemplates={promptTemplates}
           defaultDesignSystemId={config.designSystemId}
           config={config}
+          currentUser={currentUser}
           agents={agents}
           skillsLoading={skillsLoading}
           designSystemsLoading={dsLoading}
@@ -1030,6 +1085,7 @@ export function App() {
           onRenameProject={handleRenameProject}
           onChangeDefaultDesignSystem={handleChangeDefaultDesignSystem}
           onOpenSettings={openSettings}
+          onLogout={handleLogout}
           onAdoptPet={openPetSettings}
           onAdoptPetInline={handleAdoptPet}
           onTogglePet={handleTogglePet}
@@ -1046,6 +1102,7 @@ export function App() {
           agents={agents}
           daemonLive={daemonLive}
           appVersionInfo={appVersionInfo}
+          currentUser={currentUser}
           welcome={settingsWelcome}
           initialSection={settingsInitialSection}
           composioConfigLoading={composioConfigLoading}
@@ -1061,7 +1118,7 @@ export function App() {
             if (!next.onboardingCompleted || !config.onboardingCompleted) {
               latestPersistedConfigRef.current = next;
               saveConfig(next);
-              void syncConfigToDaemon(next);
+              if (currentUser?.role === 'admin') void syncConfigToDaemon(next);
               setConfig(next);
             }
             setSettingsOpen(false);
@@ -1073,7 +1130,9 @@ export function App() {
           onReloadMediaProviders={reloadMediaProvidersFromDaemon}
         />
       ) : null}
-      <MemoryToast onOpenMemory={() => openSettings('memory')} />
+      {currentUser.role === 'admin' ? (
+        <MemoryToast onOpenMemory={() => openSettings('memory')} />
+      ) : null}
       {/* First-run privacy consent banner. It waits for daemon config
           hydration because privacyDecisionAt is daemon-owned and stripped
           from localStorage. It also yields while Settings is open so the
