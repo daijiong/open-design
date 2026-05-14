@@ -305,6 +305,13 @@ export function registerAuthRoutes(app: Express, db: Db, auth: AuthDeps, sendApi
     if (req.body?.status === 'active' || req.body?.status === 'disabled' || req.body?.status === 'pending') {
       patch.status = req.body.status;
     }
+    if ('password' in (req.body ?? {})) {
+      const password = typeof req.body?.password === 'string' ? req.body.password : '';
+      if (password.length < PASSWORD_MIN_LENGTH) {
+        return sendApiError(res, 400, 'BAD_REQUEST', `password must be at least ${PASSWORD_MIN_LENGTH} characters`);
+      }
+      patch.passwordHash = hashPassword(password);
+    }
     const wouldRemoveAdmin =
       target.role === 'admin' &&
       target.status === 'active' &&
@@ -312,8 +319,11 @@ export function registerAuthRoutes(app: Express, db: Db, auth: AuthDeps, sendApi
     if (wouldRemoveAdmin && countActiveAdmins(db) <= 1) {
       return sendApiError(res, 400, 'LAST_ADMIN', 'At least one active admin is required');
     }
+    const currentAdmin = auth.currentUser(req);
     const updated = updateUser(db, target.id, patch);
-    if (updated?.status !== 'active') deleteSessionsForUser(db, target.id);
+    if (updated?.status !== 'active' || (patch.passwordHash && currentAdmin?.id !== target.id)) {
+      deleteSessionsForUser(db, target.id);
+    }
     res.json({ user: auth.sanitizeUser(updated) });
   });
 }

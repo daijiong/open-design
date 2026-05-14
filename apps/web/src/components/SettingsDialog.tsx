@@ -154,6 +154,7 @@ function formatUserTime(value: number | undefined): string {
 
 function AdminUsersSection({ currentUser }: { currentUser: CurrentUser }) {
   const [users, setUsers] = useState<CurrentUser[]>([]);
+  const [passwordDrafts, setPasswordDrafts] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
@@ -175,7 +176,7 @@ function AdminUsersSection({ currentUser }: { currentUser: CurrentUser }) {
 
   const patchUser = async (
     user: CurrentUser,
-    patch: Partial<Pick<CurrentUser, 'name' | 'role' | 'status'>>,
+    patch: Partial<Pick<CurrentUser, 'name' | 'role' | 'status'>> & { password?: string },
   ) => {
     setNotice(null);
     setSavingId(user.id);
@@ -183,10 +184,27 @@ function AdminUsersSection({ currentUser }: { currentUser: CurrentUser }) {
     setSavingId(null);
     if ('error' in result) {
       setNotice({ kind: 'error', message: result.error });
-      return;
+      return false;
     }
     setUsers((current) => current.map((item) => (item.id === result.user.id ? result.user : item)));
     setNotice({ kind: 'success', message: '用户信息已保存。' });
+    return true;
+  };
+
+  const savePassword = async (user: CurrentUser) => {
+    const password = (passwordDrafts[user.id] ?? '').trim();
+    if (password.length < 8) {
+      setNotice({ kind: 'error', message: '新密码至少需要 8 位。' });
+      return;
+    }
+    const saved = await patchUser(user, { password });
+    if (saved) {
+      setPasswordDrafts((current) => {
+        const next = { ...current };
+        delete next[user.id];
+        return next;
+      });
+    }
   };
 
   return (
@@ -263,6 +281,33 @@ function AdminUsersSection({ currentUser }: { currentUser: CurrentUser }) {
                       <option value="disabled">{USER_STATUS_LABEL.disabled}</option>
                       <option value="pending">{USER_STATUS_LABEL.pending}</option>
                     </select>
+                  </label>
+                  <label className="admin-user-password">
+                    <span>新密码</span>
+                    <div className="admin-user-password-input">
+                      <input
+                        type="password"
+                        value={passwordDrafts[user.id] ?? ''}
+                        disabled={saving}
+                        placeholder="至少 8 位"
+                        aria-label={`新密码 ${user.email}`}
+                        onChange={(event) => {
+                          const password = event.target.value;
+                          setPasswordDrafts((current) => ({ ...current, [user.id]: password }));
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') void savePassword(user);
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="ghost"
+                        disabled={saving || !(passwordDrafts[user.id] ?? '').trim()}
+                        onClick={() => void savePassword(user)}
+                      >
+                        修改
+                      </button>
+                    </div>
                   </label>
                 </div>
                 <div className="admin-user-meta">
