@@ -5,6 +5,7 @@ import {
   agentIdToTracking,
   projectKindToTracking,
 } from '@open-design/contracts/analytics';
+import { validateBaseUrlResolved } from './connectionTest.js';
 
 export interface RegisterChatRoutesDeps extends RouteDeps<'db' | 'design' | 'http' | 'auth' | 'chat' | 'agents' | 'critique' | 'validation' | 'lifecycle'> {}
 
@@ -38,7 +39,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
   const { db, design } = ctx;
   const { sendApiError, createSseResponse } = ctx.http;
   const { currentUser, requireAuth, requireAdmin, requireProjectAccess, canAccessProject } = ctx.auth;
-  const { startChatRun } = ctx.chat;
+  const { startChatRun, submitToolResultToRun } = ctx.chat;
   const { testProviderConnection, testAgentConnection, getAgentDef, isKnownModel, sanitizeCustomModel, listProviderModels } = ctx.agents;
   const {
     handleCritiqueArtifact,
@@ -47,8 +48,8 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
     critiqueResponseCapBytes,
     critiqueRunRegistry,
   } = ctx.critique;
-  const { validateBaseUrl } = ctx.validation;
   const isDaemonShuttingDown = ctx.lifecycle?.isDaemonShuttingDown ?? (() => false);
+
   function canAccessRun(req: any, run: any): boolean {
     const user = currentUser(req);
     if (!user || !run) return false;
@@ -56,6 +57,25 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
     const project = db.prepare(`SELECT owner_user_id AS ownerUserId FROM projects WHERE id = ?`).get(run.projectId);
     return canAccessProject(user, project);
   }
+
+  const rejectProxyPluginContext = (body: Record<string, unknown>, res: any) => {
+    if (
+      (typeof body.pluginId === 'string' && body.pluginId.trim().length > 0) ||
+      (
+        typeof body.appliedPluginSnapshotId === 'string' &&
+        body.appliedPluginSnapshotId.trim().length > 0
+      )
+    ) {
+      sendApiError(
+        res,
+        409,
+        'PLUGIN_REQUIRES_DAEMON',
+        'Plugin runs must go through POST /api/runs so the daemon can resolve and pin the applied plugin snapshot.',
+      );
+      return true;
+    }
+    return false;
+  };
 
   app.post('/api/runs', requireAuth, (req, res) => {
     if (isDaemonShuttingDown()) {
@@ -235,9 +255,56 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
     res.json(body);
   });
 
+  // Feed a `tool_result` content block into a running stream-json child.
+  // Currently used to answer Claude's `AskUserQuestion` tool: the host UI
+  // collects the user's choice, the web POSTs the formatted answer here,
+  // and the daemon writes a JSONL line into the still-open stdin. Without
+  // this path Claude auto-errors the tool in headless mode and falls back
+  // to a markdown duplicate of the same options.
+  app.post('/api/runs/:id/tool-result', requireAuth, (req, res) => {
+    if (typeof submitToolResultToRun !== 'function') {
+      return sendApiError(res, 501, 'NOT_IMPLEMENTED', 'tool-result wiring is not available');
+    }
+    const run = design.runs.get(req.params.id);
+    if (!run) return sendApiError(res, 404, 'NOT_FOUND', 'run not found');
+    if (!canAccessRun(req, run)) return sendApiError(res, 404, 'NOT_FOUND', 'run not found');
+    const body = (req.body || {}) as {
+      toolUseId?: unknown;
+      content?: unknown;
+      isError?: unknown;
+    };
+    const toolUseId = typeof body.toolUseId === 'string' ? body.toolUseId : '';
+    const content = typeof body.content === 'string' ? body.content : '';
+    const isError = body.isError === true;
+    if (!toolUseId) {
+      return sendApiError(res, 400, 'BAD_REQUEST', 'toolUseId is required');
+    }
+    const result = submitToolResultToRun(req.params.id, toolUseId, content, isError);
+    if (!result || !result.ok) {
+      const reason = result && result.reason ? result.reason : 'unknown';
+      if (reason === 'not_found') {
+        return sendApiError(res, 404, 'NOT_FOUND', 'run not found');
+      }
+      if (reason === 'run_terminal' || reason === 'stdin_closed') {
+        return sendApiError(res, 410, 'GONE', `run is no longer accepting tool results (${reason})`);
+      }
+      if (reason === 'stdin_text_mode') {
+        return sendApiError(res, 400, 'BAD_REQUEST', 'run does not support interactive tool results');
+      }
+      if (reason === 'bad_tool_use_id') {
+        return sendApiError(res, 400, 'BAD_REQUEST', 'toolUseId is invalid');
+      }
+      return sendApiError(res, 500, 'INTERNAL', `tool result write failed: ${reason}`);
+    }
+    res.json({ ok: true });
+  });
+
   app.post('/api/chat', requireAuth, (req, res) => {
     if (isDaemonShuttingDown()) {
       return sendApiError(res, 503, 'UPSTREAM_UNAVAILABLE', 'daemon is shutting down');
+    }
+    if (rejectProxyPluginContext(req.body || {}, res)) {
+      return;
     }
     if (typeof req.body?.projectId === 'string' && !requireProjectAccess(req, res, req.body.projectId)) {
       return;
@@ -466,8 +533,13 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
   const redactAuthTokens = (text: string) =>
     text.replace(/Bearer [A-Za-z0-9_\-.+/=]+/g, 'Bearer [REDACTED]');
 
+  // DNS-aware wrapper. The sync `validateBaseUrl` only inspects the literal
+  // hostname string, so a public DNS name pointing at an internal address
+  // (`internal.example.com → 10.0.0.5`) still passes. We delegate to
+  // `validateBaseUrlResolved` here so every proxy/stream handler runs the
+  // same resolved-IP check before issuing the upstream request.
   const validateExternalApiBaseUrl = (baseUrl: string) => {
-    return validateBaseUrl(baseUrl);
+    return validateBaseUrlResolved(baseUrl);
   };
 
   const proxyErrorCode = (status: number) => {
@@ -649,6 +721,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
   app.post('/api/proxy/anthropic/stream', requireAuth, async (req, res) => {
     /** @type {Partial<ProxyStreamRequest>} */
     const proxyBody = req.body || {};
+    if (rejectProxyPluginContext(proxyBody, res)) return;
     const { baseUrl, apiKey, model, systemPrompt, messages, maxTokens } =
       proxyBody;
     if (!baseUrl || !apiKey || !model) {
@@ -660,7 +733,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
       );
     }
 
-    const validated = validateExternalApiBaseUrl(baseUrl);
+    const validated = await validateExternalApiBaseUrl(baseUrl);
     if (validated.error) {
       return sendApiError(
         res,
@@ -672,7 +745,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
 
     const url = appendVersionedApiPath(baseUrl, '/messages');
     console.log(
-      `[proxy:anthropic] ${req.method} ${validated.parsed.hostname} model=${model}`,
+      `[proxy:anthropic] ${req.method} ${validated.parsed!.hostname} model=${model}`,
     );
 
     const payload: any = {
@@ -744,6 +817,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
   app.post('/api/proxy/openai/stream', requireAuth, async (req, res) => {
     /** @type {Partial<ProxyStreamRequest>} */
     const proxyBody = req.body || {};
+    if (rejectProxyPluginContext(proxyBody, res)) return;
     const { baseUrl, apiKey, model, systemPrompt, messages, maxTokens } =
       proxyBody;
     if (!baseUrl || !apiKey || !model) {
@@ -755,7 +829,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
       );
     }
 
-    const validated = validateExternalApiBaseUrl(baseUrl);
+    const validated = await validateExternalApiBaseUrl(baseUrl);
     if (validated.error) {
       return sendApiError(
         res,
@@ -767,7 +841,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
 
     const url = appendVersionedApiPath(baseUrl, '/chat/completions');
     console.log(
-      `[proxy:openai] ${req.method} ${validated.parsed.hostname} model=${model}`,
+      `[proxy:openai] ${req.method} ${validated.parsed!.hostname} model=${model}`,
     );
 
     const payloadMessages = Array.isArray(messages) ? [...messages] : [];
@@ -839,6 +913,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
   app.post('/api/proxy/azure/stream', requireAuth, async (req, res) => {
     /** @type {Partial<ProxyStreamRequest>} */
     const proxyBody = req.body || {};
+    if (rejectProxyPluginContext(proxyBody, res)) return;
     const { baseUrl, apiKey, model, systemPrompt, messages, maxTokens, apiVersion } =
       proxyBody;
     if (!baseUrl || !apiKey || !model) {
@@ -850,7 +925,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
       );
     }
 
-    const validated = validateExternalApiBaseUrl(baseUrl);
+    const validated = await validateExternalApiBaseUrl(baseUrl);
     if (validated.error) {
       return sendApiError(
         res,
@@ -879,7 +954,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
       url.searchParams.set('api-version', version);
     }
     console.log(
-      `[proxy:azure] ${req.method} ${validated.parsed.hostname} deployment=${model} api-version=${version || 'omitted'}`,
+      `[proxy:azure] ${req.method} ${validated.parsed!.hostname} deployment=${model} api-version=${version || 'omitted'}`,
     );
 
     const payloadMessages = Array.isArray(messages) ? [...messages] : [];
@@ -951,6 +1026,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
   app.post('/api/proxy/google/stream', requireAuth, async (req, res) => {
     /** @type {Partial<ProxyStreamRequest>} */
     const proxyBody = req.body || {};
+    if (rejectProxyPluginContext(proxyBody, res)) return;
     const { baseUrl, apiKey, model, systemPrompt, messages, maxTokens } = proxyBody;
     if (!apiKey || !model) {
       return sendApiError(
@@ -962,7 +1038,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
     }
 
     const effectiveBaseUrl = baseUrl || 'https://generativelanguage.googleapis.com';
-    const validated = validateExternalApiBaseUrl(effectiveBaseUrl);
+    const validated = await validateExternalApiBaseUrl(effectiveBaseUrl);
     if (validated.error) {
       return sendApiError(
         res,
@@ -975,7 +1051,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
     const clean = effectiveBaseUrl.replace(/\/+$/, '');
     const url = `${clean}/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`;
     console.log(
-      `[proxy:google] ${req.method} ${validated.parsed.hostname} model=${model}`,
+      `[proxy:google] ${req.method} ${validated.parsed!.hostname} model=${model}`,
     );
 
     const contents = (Array.isArray(messages) ? messages : []).map((message) => ({
@@ -1049,13 +1125,14 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
 
   app.post('/api/proxy/ollama/stream', requireAuth, async (req, res) => {
     const proxyBody = req.body || {};
+    if (rejectProxyPluginContext(proxyBody, res)) return;
     const { baseUrl, apiKey, model, systemPrompt, messages, maxTokens } = proxyBody;
     if (!apiKey || !model) {
       return sendApiError(res, 400, 'BAD_REQUEST', 'apiKey and model are required');
     }
 
     const effectiveBaseUrl = baseUrl || 'https://ollama.com';
-    const validated = validateExternalApiBaseUrl(effectiveBaseUrl);
+    const validated = await validateExternalApiBaseUrl(effectiveBaseUrl);
     if (validated.error) {
       return sendApiError(
         res,
@@ -1067,7 +1144,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
 
     const clean = effectiveBaseUrl.replace(/\/+$/, '').replace(/\/api\/?$/, '');
     const url = `${clean}/api/chat`;
-    console.log(`[proxy:ollama] ${req.method} ${validated.parsed.hostname} model=${model}`);
+    console.log(`[proxy:ollama] ${req.method} ${validated.parsed!.hostname} model=${model}`);
 
     const payloadMessages = Array.isArray(messages) ? [...messages] : [];
     if (typeof systemPrompt === 'string' && systemPrompt) {
@@ -1086,6 +1163,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
         body: JSON.stringify(payload),
+        redirect: 'error',
       });
 
       if (!response.ok) {

@@ -2,6 +2,7 @@
 import type { DesktopExportPdfInput, DesktopExportPdfResult } from '@open-design/sidecar-proto';
 import express from 'express';
 import multer from 'multer';
+import JSZip from 'jszip';
 import { execFile, spawn } from 'node:child_process';
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createRequire } from 'node:module';
@@ -10,6 +11,10 @@ import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import net from 'node:net';
+import {
+  defaultScenarioPluginIdForKind,
+  PLUGIN_SHARE_ACTION_PLUGIN_IDS,
+} from '@open-design/contracts';
 import {
   composeSystemPrompt,
   renderCodexImagegenOverride,
@@ -38,7 +43,49 @@ import { installFromTarget, uninstallById, sanitizeRepoName } from './library-in
 import { buildWindowsFolderDialogCommand, parseFolderDialogStdout } from './native-folder-dialog.js';
 import { listCodexPets, readCodexPetSpritesheet } from './codex-pets.js';
 import { syncCommunityPets } from './community-pets-sync.js';
-import { listDesignSystems, readDesignSystem, readDesignSystemAssets } from './design-systems.js';
+import {
+  listDesignSystems,
+  readDesignSystem,
+  resolveDesignSystemAssets,
+} from './design-systems.js';
+import {
+  applyDiffReviewDecisionToCwd,
+  applyPlugin,
+  defaultBundledRoot,
+  doctorPlugin,
+  FIRST_PARTY_ATOMS,
+  getInstalledPlugin,
+  getSnapshot,
+  installFromLocalFolder,
+  installPlugin,
+  isDiffReviewSurfaceId,
+  listInstalledPlugins,
+  listIterationsForRun,
+  MissingInputError,
+  pluginPromptBlock,
+  pruneExpiredSnapshots,
+  readPluginLockfile,
+  registerBuiltInAtomWorkers,
+  registerBundledPlugins,
+  registryRootsForDataDir,
+  resolvePluginSnapshot,
+  runPipelineForRun,
+  runStageWithRegistry,
+  startSnapshotGc,
+  uninstallPlugin,
+} from './plugins/index.js';
+import {
+  marketplaceManifestUrlForRegistry,
+  marketplaceRegistryIdFromUrl,
+} from './plugins/marketplaces.js';
+import {
+  getSurface,
+  listSurfacesForProject,
+  listSurfacesForRun,
+  prefillProjectSurface,
+  respondSurface as respondSurfaceRow,
+  revokeProjectSurface,
+} from './genui/index.js';
 import {
   composeMemoryBody,
   deleteMemoryEntry,
@@ -78,6 +125,7 @@ import {
   parseRolloutPhase,
   type SkillCritiquePolicy,
 } from './critique/rollout.js';
+import { narrowProjectCritiqueOverride } from './critique/spawn-inputs.js';
 import { createCopilotStreamHandler } from './copilot-stream.js';
 import { createJsonEventStreamHandler } from './json-event-stream.js';
 import { classifyAgentAuthFailure, cursorAuthGuidance } from './runtimes/auth.js';
@@ -97,6 +145,7 @@ import {
   testAgentConnection,
   testProviderConnection,
   validateBaseUrl,
+  validateBaseUrlResolved,
 } from './connectionTest.js';
 import { listProviderModels } from './providerModels.js';
 import { importClaudeDesignZip } from './claude-design-import.js';
@@ -155,8 +204,8 @@ import {
   readAllTokens,
   setToken,
 } from './mcp-tokens.js';
-import { agentCliEnvForAgent, readAppConfig, writeAppConfig } from './app-config.js';
 import { createAuthDeps, registerAuthRoutes } from './auth.js';
+import { agentCliEnvForAgent, readAppConfig, readPluginEnvKnobs, writeAppConfig } from './app-config.js';
 import { OrbitService, formatLocalProjectTimestamp, renderOrbitTemplateSystemPrompt } from './orbit.js';
 import { buildOrbitNoLiveArtifactSummary } from './orbit-agent-summary.js';
 import {
@@ -180,6 +229,7 @@ import {
   readProjectFile,
   renameProjectFile,
   removeProjectDir,
+  resolveProjectDir,
   sanitizeName,
   searchProjectFiles,
   resolveProjectDir,
@@ -441,6 +491,16 @@ export function composeLiveInstructionPrompt({
     parts.push(override);
   }
   return parts.join('\n\n---\n\n');
+}
+
+function renderPluginBriefTemplate(template, inputs = {}) {
+  if (typeof template !== 'string' || template.length === 0) return '';
+  return template.replace(/\{\{\s*([a-zA-Z_][\w-]*)\s*\}\}/g, (full, key) => {
+    if (!Object.hasOwn(inputs, key)) return full;
+    const value = inputs[key];
+    if (value === undefined || value === null || value === '') return full;
+    return String(value);
+  });
 }
 
 export function resolveResearchCommandContract(research, message) {
@@ -978,6 +1038,92 @@ const PROMPT_TEMPLATES_DIR = resolveDaemonResourceDir(
   'prompt-templates',
   path.join(PROJECT_ROOT, 'prompt-templates'),
 );
+const BUNDLED_PLUGINS_DIR = resolveDaemonResourceDir(
+  DAEMON_RESOURCE_ROOT,
+  path.join('plugins', '_official'),
+  defaultBundledRoot(PROJECT_ROOT),
+);
+const PLUGIN_REGISTRY_DIR = resolveDaemonResourceDir(
+  DAEMON_RESOURCE_ROOT,
+  'plugins/registry',
+  path.join(PROJECT_ROOT, 'plugins', 'registry'),
+);
+const OFFICIAL_MARKETPLACE_ID = 'official';
+const OFFICIAL_PLUGIN_SOURCE_REPO = 'github:nexu-io/open-design@main';
+
+function defaultMarketplaceSeedConfig(id) {
+  return {
+    trust: id === OFFICIAL_MARKETPLACE_ID ? 'official' : 'restricted',
+    url:   marketplaceManifestUrlForRegistry(id),
+  };
+}
+
+function bundledPluginRegistrySource(sourcePath) {
+  if (isPathWithin(BUNDLED_PLUGINS_DIR, sourcePath)) {
+    const rel = path.relative(BUNDLED_PLUGINS_DIR, sourcePath).split(path.sep).join('/');
+    return `${OFFICIAL_PLUGIN_SOURCE_REPO}/plugins/_official/${rel}`;
+  }
+  const rel = path.relative(PROJECT_ROOT, sourcePath).split(path.sep).join('/');
+  if (!rel || rel.startsWith('..')) return sourcePath;
+  return `${OFFICIAL_PLUGIN_SOURCE_REPO}/${rel}`;
+}
+
+function mergeMarketplaceEntries(manifestText, entries) {
+  try {
+    const parsed = JSON.parse(manifestText);
+    const plugins = Array.isArray(parsed.plugins) ? parsed.plugins : [];
+    const seen = new Set(plugins.map((entry) => String(entry?.name ?? '').toLowerCase()));
+    const generated = entries.filter((entry) => {
+      const key = String(entry.name ?? '').toLowerCase();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    return JSON.stringify({
+      ...parsed,
+      metadata: {
+        ...(parsed.metadata && typeof parsed.metadata === 'object' ? parsed.metadata : {}),
+        bundledPreinstallCount: entries.length,
+      },
+      plugins: [...plugins, ...generated],
+    });
+  } catch {
+    return manifestText;
+  }
+}
+
+async function marketplaceSeedManifestText(id, bundledMarketplaceEntries) {
+  const manifestPath = path.join(PLUGIN_REGISTRY_DIR, id, 'open-design-marketplace.json');
+  if (!fs.existsSync(manifestPath)) return null;
+  let manifestText = await fs.promises.readFile(manifestPath, 'utf8');
+  if (id === OFFICIAL_MARKETPLACE_ID && bundledMarketplaceEntries.length > 0) {
+    manifestText = mergeMarketplaceEntries(manifestText, bundledMarketplaceEntries);
+  }
+  return manifestText;
+}
+
+function createMarketplaceFetcher(seedId, bundledMarketplaceEntries) {
+  return async (url) => {
+    const registryId = marketplaceRegistryIdFromUrl(url);
+    if (registryId && (!seedId || registryId === seedId)) {
+      const manifestText = await marketplaceSeedManifestText(registryId, bundledMarketplaceEntries);
+      if (manifestText != null) {
+        return {
+          ok:     true,
+          status: 200,
+          text:   async () => manifestText,
+        };
+      }
+    }
+    const response = await fetch(url, { redirect: 'follow' });
+    return {
+      ok:     response.ok,
+      status: response.status,
+      text:   () => response.text(),
+    };
+  };
+}
+
 export function resolveDataDir(raw, projectRoot) {
   if (!raw) return path.join(projectRoot, '.od');
   // expandHomePrefix is shared with media-config.ts so OD_DATA_DIR and
@@ -1015,6 +1161,7 @@ export function resolveDataDir(raw, projectRoot) {
   return resolved;
 }
 const RUNTIME_DATA_DIR = resolveDataDir(process.env.OD_DATA_DIR, PROJECT_ROOT);
+const PLUGIN_LOCKFILE_PATH = path.join(RUNTIME_DATA_DIR, 'od-plugin-lock.json');
 // Canonical (realpath-resolved) form of RUNTIME_DATA_DIR for the few callers
 // that compare it against a user-supplied realpath() result. On macOS, /var
 // is a symlink to /private/var, so an import realpath lands in /private/var
@@ -1045,6 +1192,7 @@ const CRITIQUE_ARTIFACTS_DIR = path.join(RUNTIME_DATA_DIR, 'critique-artifacts')
 const PROJECTS_DIR = path.join(RUNTIME_DATA_DIR, 'projects');
 const USER_SKILLS_DIR = path.join(RUNTIME_DATA_DIR, 'skills');
 const USER_DESIGN_SYSTEMS_DIR = path.join(RUNTIME_DATA_DIR, 'design-systems');
+const PLUGIN_REGISTRY_ROOTS = registryRootsForDataDir(RUNTIME_DATA_DIR);
 // User-imported design templates mirror USER_SKILLS_DIR but are scanned
 // against DESIGN_TEMPLATES_DIR rather than SKILLS_DIR so the EntryView
 // Templates surface and the Settings → Skills surface stay decoupled.
@@ -1064,7 +1212,7 @@ const ALL_SKILL_LIKE_ROOTS = [
   DESIGN_TEMPLATES_DIR,
 ];
 fs.mkdirSync(PROJECTS_DIR, { recursive: true });
-for (const dir of [USER_SKILLS_DIR, USER_DESIGN_SYSTEMS_DIR, USER_DESIGN_TEMPLATES_DIR]) {
+for (const dir of [USER_SKILLS_DIR, USER_DESIGN_SYSTEMS_DIR, USER_DESIGN_TEMPLATES_DIR, PLUGIN_REGISTRY_ROOTS.userPluginsRoot]) {
   fs.mkdirSync(dir, { recursive: true });
 }
 fs.mkdirSync(CRITIQUE_ARTIFACTS_DIR, { recursive: true });
@@ -1324,7 +1472,232 @@ function sendApiError(res, status, code, message, init = {}) {
     .json(createCompatApiErrorResponse(code, message, init));
 }
 
+function normalizeProjectPluginFolderPath(input) {
+  const value = String(input ?? '').replace(/\\/g, '/').trim();
+  if (!value || value.includes('\0') || value.startsWith('/') || /^[A-Za-z]:\//.test(value)) {
+    throw new Error('plugin folder path must be a relative project path');
+  }
+  const parts = value.split('/').filter(Boolean);
+  if (parts.length === 0 || parts.some((part) => part === '.' || part === '..')) {
+    throw new Error('plugin folder path must not contain traversal segments');
+  }
+  return parts.join('/');
+}
+
+async function resolveProjectChildDirectory(projectRoot, relativePath) {
+  const rootReal = await fs.promises.realpath(projectRoot);
+  const candidate = path.resolve(projectRoot, relativePath);
+  const real = await fs.promises.realpath(candidate);
+  if (!real.startsWith(rootReal + path.sep) && real !== rootReal) {
+    throw new Error('plugin folder path escapes project dir');
+  }
+  const st = await fs.promises.stat(real);
+  if (!st.isDirectory()) {
+    const err = new Error('plugin folder path is not a directory');
+    err.code = 'ENOTDIR';
+    throw err;
+  }
+  return real;
+}
+
+function execFileBuffered(command, args, opts = {}) {
+  return new Promise((resolve) => {
+    execFile(command, args, { timeout: 120_000, maxBuffer: 1024 * 1024, ...opts }, (error, stdout, stderr) => {
+      resolve({
+        ok: !error,
+        code: error?.code,
+        stdout: String(stdout ?? '').trim(),
+        stderr: String(stderr ?? '').trim(),
+        error,
+      });
+    });
+  });
+}
+
+async function readProjectPluginManifest(folder) {
+  const raw = await fs.promises.readFile(path.join(folder, 'open-design.json'), 'utf8');
+  const manifest = JSON.parse(raw);
+  const name = typeof manifest.name === 'string' && manifest.name.trim()
+    ? manifest.name.trim()
+    : path.basename(folder);
+  return {
+    name,
+    title: typeof manifest.title === 'string' ? manifest.title : name,
+    version: typeof manifest.version === 'string' ? manifest.version : '0.1.0',
+    manifest,
+  };
+}
+
+function githubRepoNameFromPluginName(name) {
+  const slug = String(name)
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/(^[-._]+|[-._]+$)/g, '');
+  return slug || 'open-design-plugin';
+}
+
+const PLUGIN_SHARE_ACTION_LABELS = {
+  'publish-github': 'Publish to GitHub',
+  'contribute-open-design': 'Contribute to Open Design',
+};
+
+const USER_PLUGIN_SOURCE_KINDS = new Set([
+  'user',
+  'project',
+  'marketplace',
+  'github',
+  'url',
+  'local',
+]);
+
+const PLUGIN_CONTEXT_SKIP_DIRS = new Set([
+  '.git',
+  '.next',
+  '.nuxt',
+  '.od',
+  '.output',
+  '.tmp',
+  '.turbo',
+  '.venv',
+  '__pycache__',
+  'build',
+  'coverage',
+  'dist',
+  'node_modules',
+  'out',
+  'target',
+  'vendor',
+]);
+
+const PLUGIN_CONTEXT_SKIP_FILES = new Set([
+  '.DS_Store',
+  'Thumbs.db',
+]);
+
+function normalizePluginShareAction(input) {
+  const value = typeof input === 'string' ? input.trim() : '';
+  return Object.prototype.hasOwnProperty.call(PLUGIN_SHARE_ACTION_PLUGIN_IDS, value)
+    ? value
+    : null;
+}
+
+function renderPluginSharePrompt({ action, sourcePlugin, stagedPath }) {
+  const title = sourcePlugin.title || sourcePlugin.id;
+  if (action === 'publish-github') {
+    return [
+      `Publish the local Open Design plugin "${title}" as a new public GitHub repository.`,
+      '',
+      `The plugin source files have been copied into this project at \`${stagedPath}\`.`,
+      'Use the local daemon share endpoint so the publish flow runs through Open Design\'s validated GitHub path:',
+      '',
+      '```bash',
+      `curl -sS -X POST "$OD_DAEMON_URL/api/projects/$OD_PROJECT_ID/plugins/publish-github" \\`,
+      `  -H 'content-type: application/json' \\`,
+      `  -d '${JSON.stringify({ path: stagedPath })}'`,
+      '```',
+      '',
+      'Read the JSON response. If `ok` is true, report the final repository URL and any validation/log summary. If it fails, report the `message`, `code`, and the useful log lines. The endpoint checks `gh` auth and performs the repository creation; do not hand-roll a second GitHub flow unless you are explaining a daemon endpoint failure.',
+      '',
+      'Do not rewrite the plugin unless publishing requires a small metadata fix. If you make any fix, explain it before publishing.',
+    ].join('\n');
+  }
+  return [
+    `Open a pull request to add the local Open Design plugin "${title}" to the Open Design repository.`,
+    '',
+    `The plugin source files have been copied into this project at \`${stagedPath}\`.`,
+    'Use the local daemon share endpoint so the contribution flow runs through Open Design\'s validated GitHub path:',
+    '',
+    '```bash',
+    `curl -sS -X POST "$OD_DAEMON_URL/api/projects/$OD_PROJECT_ID/plugins/contribute-open-design" \\`,
+    `  -H 'content-type: application/json' \\`,
+    `  -d '${JSON.stringify({ path: stagedPath })}'`,
+    '```',
+    '',
+    'Read the JSON response. If `ok` is true, report the PR URL, branch, and any validation/log summary. If it fails, report the `message`, `code`, and the useful log lines. The endpoint checks `gh` auth, forks/clones, pushes, and opens the PR; do not hand-roll a second GitHub flow unless you are explaining a daemon endpoint failure.',
+    '',
+    'Keep the PR focused on this plugin. Report the PR URL and any validation you ran.',
+  ].join('\n');
+}
+
+async function copyPluginFolderForProjectContext(sourceRoot, destRoot) {
+  const rootReal = await fs.promises.realpath(sourceRoot);
+  const stat = await fs.promises.stat(rootReal);
+  if (!stat.isDirectory()) {
+    const err = new Error('plugin source path is not a directory');
+    err.code = 'ENOTDIR';
+    throw err;
+  }
+  await copyPluginContextDir(rootReal, destRoot, rootReal);
+}
+
+async function copyPluginContextDir(src, dest, rootReal) {
+  await fs.promises.mkdir(dest, { recursive: true });
+  const entries = await fs.promises.readdir(src, { withFileTypes: true });
+  for (const entry of entries) {
+    if (shouldSkipPluginContextEntry(entry.name)) continue;
+    if (entry.isSymbolicLink()) continue;
+
+    const from = path.join(src, entry.name);
+    const to = path.join(dest, entry.name);
+    if (entry.isDirectory()) {
+      const childReal = await fs.promises.realpath(from).catch(() => null);
+      if (!childReal || (childReal !== rootReal && !childReal.startsWith(rootReal + path.sep))) {
+        continue;
+      }
+      await copyPluginContextDir(childReal, to, rootReal);
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    await fs.promises.mkdir(path.dirname(to), { recursive: true });
+    await fs.promises.copyFile(from, to);
+  }
+}
+
+function shouldSkipPluginContextEntry(name) {
+  return PLUGIN_CONTEXT_SKIP_DIRS.has(name) || PLUGIN_CONTEXT_SKIP_FILES.has(name);
+}
+
+async function ensureGhReady() {
+  const version = await execFileBuffered('gh', ['--version'], { timeout: 10_000 });
+  if (!version.ok) {
+    return {
+      ok: false,
+      code: 'gh-not-installed',
+      message: 'GitHub CLI is not installed. Install it, then click this action again.',
+      url: 'https://cli.github.com/',
+      log: [version.stderr || version.stdout || 'gh --version failed'],
+    };
+  }
+  const auth = await execFileBuffered('gh', ['auth', 'status', '--hostname', 'github.com'], { timeout: 10_000 });
+  if (!auth.ok) {
+    return {
+      ok: false,
+      code: 'gh-not-authenticated',
+      message: 'GitHub CLI is installed but not authenticated. Run `gh auth login --web`, finish browser authorization, then click this action again.',
+      url: 'https://github.com/login/device',
+      log: [auth.stderr || auth.stdout || 'gh auth status failed'],
+    };
+  }
+  return { ok: true, log: [version.stdout, auth.stderr || auth.stdout].filter(Boolean) };
+}
+
 const TERMINAL_RUN_STATUSES = new Set(['succeeded', 'failed', 'canceled']);
+
+function reconcileAssistantMessageOnRunEnd(db, runs, run) {
+  if (!run.assistantMessageId) return;
+  void runs
+    .wait(run)
+    .then((finalStatus) => {
+      db.prepare(
+        `UPDATE messages
+            SET run_status = ?, ended_at = COALESCE(ended_at, ?)
+          WHERE id = ? AND run_status IN ('queued', 'running')`,
+      ).run(finalStatus.status, Date.now(), run.assistantMessageId);
+    })
+    .catch((err) => {
+      console.warn('[runs] message reconciliation failed', err);
+    });
+}
 
 export function shouldReportRunCompletedFromMessage(saved, body = {}) {
   return Boolean(
@@ -1857,6 +2230,16 @@ const importUpload = multer({
   limits: { fileSize: 100 * 1024 * 1024 },
 });
 
+const PLUGIN_UPLOAD_MAX_BYTES = 50 * 1024 * 1024;
+const pluginUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: PLUGIN_UPLOAD_MAX_BYTES,
+    files: 500,
+    fieldSize: 2 * 1024 * 1024,
+  },
+});
+
 // Project-scoped multi-file upload. Lands files directly in the project
 // folder (flat — same shape FileWorkspace expects), so the composer's
 // pasted/dropped/picked images become referenceable filenames the agent
@@ -2155,6 +2538,17 @@ function resolveChatRunShutdownGraceMs() {
   return Math.max(0, Math.floor(raw));
 }
 
+function resolveAcpStageTimeoutMs(): number | undefined {
+  // Per-stage silence watchdog for ACP chat sessions. Defaults are owned by
+  // `attachAcpSession` in acp.ts; this resolver only applies when an operator
+  // sets `OD_ACP_STAGE_TIMEOUT_MS`. Bounded to the same 24h ceiling as the
+  // outer chat inactivity watchdog so an oversized override doesn't get
+  // clamped to 1ms by Node's signed-32-bit delay limit.
+  const raw = Number(process.env.OD_ACP_STAGE_TIMEOUT_MS);
+  if (!Number.isFinite(raw)) return undefined;
+  return Math.min(MAX_CHAT_RUN_INACTIVITY_TIMEOUT_MS, Math.max(0, Math.floor(raw)));
+}
+
 export async function startServer({
   port = 7456,
   host = process.env.OD_BIND_HOST || '127.0.0.1',
@@ -2164,8 +2558,57 @@ export async function startServer({
   let resolvedPort = port;
   let daemonShuttingDown = false;
   const extraAllowedOrigins = configuredAllowedOrigins();
+
+  // Plan §3.K1 / spec §15.7 — bound-API-token guard.
+  //
+  // The daemon refuses to bind to a public interface unless an
+  // OD_API_TOKEN is set. This is the spec §16 Phase 5 safety floor:
+  // a hosted operator can no longer accidentally publish an unsecured
+  // daemon by setting OD_BIND_HOST=0.0.0.0 without a token.
+  //
+  // Loopback hosts (127.0.0.1 / ::1 / localhost) are always allowed —
+  // the desktop / dev flow remains unchanged. Setting OD_API_TOKEN is
+  // purely additive: when present, every /api/* request must carry a
+  // matching `Authorization: Bearer <token>` header (loopback origins
+  // are exempted so the desktop UI keeps working).
+  const apiToken = (process.env.OD_API_TOKEN ?? '').trim();
+  if (!isLoopbackHostname(host) && apiToken.length === 0) {
+    throw new Error(
+      `OD_BIND_HOST=${host} requires OD_API_TOKEN to be set. ` +
+      `Generate one with \`openssl rand -hex 32\` and re-launch. ` +
+      `(Loopback hosts 127.0.0.1 / ::1 / localhost do not need a token.)`,
+    );
+  }
+
   const app = express();
   app.use(express.json({ limit: '4mb' }));
+
+  // Plan §3.K1 — bearer-token middleware.
+  //
+  // Active only when OD_API_TOKEN is set. Loopback origins skip the
+  // check (the desktop UI / local CLI never carry a bearer); every
+  // other request must present `Authorization: Bearer <token>` with a
+  // value matching `OD_API_TOKEN`. Health / version / status remain
+  // open so monitoring probes don't need the token.
+  if (apiToken.length > 0) {
+    const openProbePaths = new Set(['/api/health', '/api/version', '/api/daemon/status']);
+    app.use('/api', (req, res, next) => {
+      if (openProbePaths.has(req.path)) return next();
+      // Loopback short-circuit. We ignore the proxied X-Forwarded-For
+      // header here because a reverse proxy MUST always forward the
+      // bearer; the loopback bypass exists for the localhost desktop
+      // UI which has no proxy in the path.
+      if (isLoopbackPeerAddress(req.socket?.remoteAddress)) return next();
+      const auth = req.get('authorization') ?? '';
+      const match = /^Bearer\s+(\S+)\s*$/i.exec(auth);
+      if (!match || match[1] !== apiToken) {
+        return res.status(401).json({
+          error: { code: 'API_TOKEN_REQUIRED', message: 'Authorization: Bearer <OD_API_TOKEN> required' },
+        });
+      }
+      return next();
+    });
+  }
 
   // Multi-directory scanning shared by every skill / template surface. The
   // helpers delegate to listSkills(roots) which walks roots in priority
@@ -2320,6 +2763,92 @@ export async function startServer({
     console.log('[od] Codex plugins disabled via OD_CODEX_DISABLE_PLUGINS=1');
   }
 
+  let bundledMarketplaceEntries = [];
+  // Plan §3.I3 / spec §23.3.5 — register every plugin under
+  // <resourceRoot>/plugins/_official/** in packaged runs, or
+  // <projectRoot>/plugins/_official/** in workspace runs, as bundled plugins. The walker
+  // is idempotent (upserts on every boot) so a daemon upgrade rotates
+  // the bundled set in lockstep with the code. ENOENT is silent —
+  // running the daemon outside the dev tree just skips this step.
+  try {
+    const result = await registerBundledPlugins({
+      db,
+      bundledRoot: BUNDLED_PLUGINS_DIR,
+      marketplaceProvenance: {
+        sourceMarketplaceId: OFFICIAL_MARKETPLACE_ID,
+        marketplaceTrust:    'official',
+        entryNamePrefix:     'open-design',
+      },
+    });
+    bundledMarketplaceEntries = result.registered.map((plugin) => ({
+      name:        `open-design/${plugin.id}`,
+      title:       plugin.title,
+      description: plugin.description,
+      version:     plugin.version,
+      source:      bundledPluginRegistrySource(plugin.source),
+      publisher:   { id: 'open-design', url: 'https://open-design.ai' },
+      homepage:    plugin.manifest.homepage,
+      license:     plugin.manifest.license,
+      tags:        plugin.tags,
+      capabilitiesSummary: Array.isArray(plugin.manifest.od?.capabilities)
+        ? plugin.manifest.od.capabilities
+        : undefined,
+    }));
+    if (result.registered.length > 0) {
+      console.log(`[plugins] registered ${result.registered.length} bundled plugin(s)`);
+    }
+    if (result.warnings.length > 0) {
+      for (const w of result.warnings) console.warn(`[plugins] bundled warn: ${w}`);
+    }
+  } catch (err) {
+    console.warn(`[plugins] bundled registration failed: ${(err)?.message ?? err}`);
+  }
+
+  try {
+    const seedDirs = await fs.promises.readdir(PLUGIN_REGISTRY_DIR, { withFileTypes: true }).catch((err) => {
+      if (err?.code === 'ENOENT') return [];
+      throw err;
+    });
+    const { ensureMarketplaceManifest } = await import('./plugins/marketplaces.js');
+    for (const dirent of seedDirs) {
+      if (!dirent.isDirectory()) continue;
+      const id = dirent.name;
+      const manifestText = await marketplaceSeedManifestText(id, bundledMarketplaceEntries);
+      if (!manifestText) continue;
+      const configured = defaultMarketplaceSeedConfig(id);
+      const result = ensureMarketplaceManifest(db, {
+        id,
+        url: configured.url,
+        trust: configured.trust,
+        manifestText,
+      });
+      if (result.ok) {
+        console.log(`[plugins] seeded ${id} registry source (${result.row.manifest.plugins.length} plugin(s))`);
+      } else {
+        console.warn(`[plugins] ${id} registry seed failed: ${result.message}`);
+      }
+    }
+  } catch (err) {
+    console.warn(`[plugins] registry seed failed: ${(err)?.message ?? err}`);
+  }
+
+  // Plan §3.A5 / spec §16 Phase 5 / PB2: periodic snapshot GC. Disabled
+  // when OD_SNAPSHOT_GC_INTERVAL_MS is 0; otherwise one-time bootstrap
+  // sweep + interval. The function returns a NOOP_HANDLE when disabled
+  // so we don't have to branch on the result.
+  const snapshotGc = startSnapshotGc({ db });
+  // One immediate sweep so a daemon that just gained the ALTER doesn't
+  // wait the full interval before reaping pre-existing expired rows.
+  try {
+    const initialSweep = pruneExpiredSnapshots(db);
+    if (initialSweep.removed > 0) {
+      console.log(`[plugins] snapshot GC startup sweep removed ${initialSweep.removed} row(s)`);
+    }
+  } catch (err) {
+    console.warn(`[plugins] snapshot GC startup sweep failed: ${(err)?.message ?? err}`);
+  }
+  void snapshotGc; // keep handle alive for the daemon's lifetime
+
   // Warm agent-capability probes (e.g. whether the installed Claude Code
   // build advertises --include-partial-messages) so the first /api/chat
   // hits a populated cache even if /api/agents hasn't been called yet.
@@ -2346,6 +2875,171 @@ export async function startServer({
   app.get('/api/version', async (_req, res) => {
     const version = await readCurrentAppVersionInfo();
     res.json({ version });
+  });
+
+  // Plan §3.F2 / spec §11.7 — daemon lifecycle status. Returns the
+  // host / port the server is bound to plus the data dir,
+  // so `od daemon status --json` can render a one-shot health snapshot
+  // without depending on /api/version's content shape.
+  app.get('/api/daemon/status', async (_req, res) => {
+    const versionInfo = await readCurrentAppVersionInfo();
+    res.json({
+      ok: true,
+      version: versionInfo.version,
+      bindHost: process.env.OD_BIND_HOST ?? '127.0.0.1',
+      port: Number(process.env.OD_PORT ?? 7456),
+      dataDir: RUNTIME_DATA_DIR,
+      mediaConfigDir: process.env.OD_MEDIA_CONFIG_DIR ?? null,
+      pid: process.pid,
+      shuttingDown: daemonShuttingDown,
+      installedPlugins: (() => {
+        try {
+          return (db.prepare('SELECT COUNT(*) AS n FROM installed_plugins').get())?.n ?? 0;
+        } catch {
+          return 0;
+        }
+      })(),
+    });
+  });
+
+  // Plan §3.GG1 — `od daemon db status`. Inventory of the SQLite
+  // backend: file path, size on disk (primary + WAL + SHM), schema
+  // version (the user_version PRAGMA we use for migrations), and
+  // per-table row counts. Useful for ops sanity-checking
+  // deployments + comparing 'expected' vs. 'actual' table rosters.
+  app.get('/api/daemon/db', async (_req, res) => {
+    try {
+      const { inspectSqliteDatabase } = await import('./storage/db-inspect.js');
+      const file = path.join(RUNTIME_DATA_DIR, 'app.sqlite');
+      const report = await inspectSqliteDatabase({ db, file });
+      res.json(report);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // Plan §3.KK1 — non-SSE one-shot read of the event ring buffer.
+  // Useful for dashboards + the `od plugin events snapshot` CLI
+  // command that doesn't need a live tail.
+  app.get('/api/plugins/events/snapshot', async (req, res) => {
+    const since = Number(typeof req.query.since === 'string' ? req.query.since : 0);
+    const { pluginEventSnapshot } = await import('./plugins/events.js');
+    const events = pluginEventSnapshot(Number.isFinite(since) && since > 0 ? since : 0);
+    res.json({ events, count: events.length, generatedAt: Date.now() });
+  });
+
+  // Plan §3.KK2 — rolled-up stats over the buffer. Counts by kind +
+  // pluginId + oldest/newest timestamps + id range.
+  app.get('/api/plugins/events/stats', async (_req, res) => {
+    const { pluginEventSnapshot, summarisePluginEvents } = await import('./plugins/events.js');
+    res.json({
+      stats: summarisePluginEvents(pluginEventSnapshot()),
+      generatedAt: Date.now(),
+    });
+  });
+
+  // Plan §3.NN1 — `od plugin events purge`. Operator escape
+  // hatch for resetting the in-memory ring buffer. Loopback-only
+  // because clearing the buffer drops audit history; an operator
+  // with shell access to the daemon machine should be the only
+  // one allowed to invoke. Returns the pre-purge stats so the
+  // caller can confirm what they discarded.
+  app.post('/api/plugins/events/purge', requireLocalDaemonRequest, async (_req, res) => {
+    try {
+      const { purgePluginEventBuffer } = await import('./plugins/events.js');
+      const result = purgePluginEventBuffer();
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // Plan §3.II1 — `od plugin events tail`. SSE-backed live event
+  // stream of plugin lifecycle events from the in-memory ring
+  // buffer. On open: emits the buffered backlog as 'event: backlog'
+  // entries (capped at the buffer's MAX), then forwards every
+  // newly-recorded event as 'event: plugin' with the same shape.
+  // Optional ?since=<id> trims the backlog.
+  app.get('/api/plugins/events', async (req, res) => {
+    const since = Number(typeof req.query.since === 'string' ? req.query.since : 0);
+    const { pluginEventSnapshot, subscribePluginEvents } = await import('./plugins/events.js');
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+
+    // Emit the backlog so a tail consumer doesn't miss installs
+    // that happened just before they connected.
+    const backlog = pluginEventSnapshot(Number.isFinite(since) && since > 0 ? since : 0);
+    for (const ev of backlog) {
+      res.write(`event: backlog\ndata: ${JSON.stringify(ev)}\n\n`);
+    }
+
+    const unsubscribe = subscribePluginEvents((ev) => {
+      res.write(`event: plugin\ndata: ${JSON.stringify(ev)}\n\n`);
+    });
+    req.on('close', () => { unsubscribe(); });
+  });
+
+  // Plan §3.LL1 — `od daemon db verify`. Runs SQLite
+  // PRAGMA integrity_check (or quick_check when ?quick=1) +
+  // PRAGMA foreign_key_check, returns a structured issues[]
+  // report. Loopback-only via requireLocalDaemonRequest because
+  // the result reveals storage-layer state.
+  app.post('/api/daemon/db/verify', requireLocalDaemonRequest, async (req, res) => {
+    try {
+      const { verifySqliteIntegrity } = await import('./storage/db-inspect.js');
+      const quick = String(req.query.quick ?? '').toLowerCase();
+      const report = verifySqliteIntegrity({ db, quick: quick === '1' || quick === 'true' });
+      res.json(report);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // Plan §3.HH2 — `od daemon db vacuum`. Runs SQLite VACUUM to
+  // reclaim space after large delete batches (snapshot prune,
+  // plugin uninstall, etc.). Reports before / after sizes so the
+  // operator sees the reclamation, plus elapsed ms so a slow
+  // VACUUM on a big DB is visible.
+  app.post('/api/daemon/db/vacuum', requireLocalDaemonRequest, async (_req, res) => {
+    try {
+      const { inspectSqliteDatabase } = await import('./storage/db-inspect.js');
+      const file = path.join(RUNTIME_DATA_DIR, 'app.sqlite');
+      const before = await inspectSqliteDatabase({ db, file });
+      const startedAt = Date.now();
+      // VACUUM cannot run inside an active transaction; better-sqlite3
+      // exposes it as a regular pragma exec.
+      db.exec('VACUUM');
+      const elapsedMs = Date.now() - startedAt;
+      const after = await inspectSqliteDatabase({ db, file });
+      res.json({
+        ok: true,
+        beforeBytes: before.sizeBytes,
+        afterBytes:  after.sizeBytes,
+        reclaimedBytes: Math.max(0, before.sizeBytes - after.sizeBytes),
+        elapsedMs,
+      });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // Plan §3.F2 — graceful shutdown. The CLI calls this from
+  // `od daemon stop`; the actual close path goes through the same
+  // SIGTERM-equivalent flow as a parent-process kill (the boot wrapper
+  // in cli.ts wires the process listeners). 202 Accepted because the
+  // shutdown completes after the response flush.
+  app.post('/api/daemon/shutdown', requireLocalDaemonRequest, (_req, res) => {
+    res.status(202).json({ ok: true, scheduled: true });
+    setImmediate(() => {
+      try {
+        process.emit('SIGTERM');
+      } catch {
+        // Best-effort; if the listener was removed (or the process is
+        // mid-shutdown already) the kernel SIGTERM falls back below.
+      }
+    });
   });
 
   // Prometheus scrape endpoint (Phase 12). Returns the full exposition
@@ -2717,6 +3411,17 @@ export async function startServer({
     }
   });
 
+  // Reconcile follow-up — the inline POST /api/projects body that lived
+  // on garnet (with baseDir privilege check, linkedDirs validation,
+  // template snapshot seeding, plugin snapshot resolution with default
+  // scenario fallback) is intentionally dropped here. main moved project
+  // route registration into `./project-routes.js` via PR #1043, so the
+  // simple project-create surface is wired through `registerProjectRoutes`
+  // further down. Plugin-snapshot-resolution / default-scenario-fallback
+  // from garnet need to be re-integrated into project-routes.ts as a
+  // follow-up — see reconcile decision log.
+  // (legacy POST /api/projects body deleted — see registerProjectRoutes below.)
+
   const analyticsService = createAnalyticsService({ dataDir: RUNTIME_DATA_DIR });
   const design = {
     runs: createChatRunService({ createSseResponse, createSseErrorPayload }),
@@ -2777,7 +3482,12 @@ export async function startServer({
     getAppVersion: () => cachedAppVersion,
   });
 
-  const validateExternalApiBaseUrl = (baseUrl) => validateBaseUrl(baseUrl);
+  // DNS-aware wrapper. The sync `validateBaseUrl` only inspects the literal
+  // hostname string, so a public DNS name pointing at an internal address
+  // (`internal.example.com → 10.0.0.5`) still passes. We delegate to
+  // `validateBaseUrlResolved` here so every proxy and finalize handler runs
+  // the same resolved-IP check before issuing the upstream request.
+  const validateExternalApiBaseUrl = (baseUrl) => validateBaseUrlResolved(baseUrl);
 
   const resolvedPortRef = {
     get current() {
@@ -3124,6 +3834,7 @@ export async function startServer({
     designSystemId,
     streamFormat,
     connectedExternalMcp,
+    appliedPluginSnapshotId,
   }) => {
     const project =
       typeof projectId === 'string' && projectId
@@ -3166,6 +3877,37 @@ export async function startServer({
       }
     }
 
+    // Stage A of plugin-driven-flow-plan: when the run is bound to a
+    // plugin snapshot, prefer the plugin's local SKILL.md (declared via
+    // `od.context.skills[{ path: './SKILL.md' }]`) over the global
+    // skill. Without this override the agent loses the plugin's
+    // template / token / layout rules and falls back to generic prompt
+    // behaviour even though the user explicitly applied the plugin.
+    if (
+      typeof appliedPluginSnapshotId === 'string'
+      && appliedPluginSnapshotId.length > 0
+    ) {
+      try {
+        const snap = getSnapshot(db, appliedPluginSnapshotId);
+        if (snap?.pluginId) {
+          const plugin = getInstalledPlugin(db, snap.pluginId);
+          if (plugin) {
+            const { loadPluginLocalSkill } = await import('./plugins/local-skill.js');
+            const local = await loadPluginLocalSkill(plugin);
+            if (local) {
+              skillBody = local.body;
+              skillName = local.name;
+              activeSkillDir = local.dir;
+            }
+          }
+        }
+      } catch (err) {
+        console.warn(
+          `[plugins] pluginSkillBody load failed: ${err?.message ?? err}`,
+        );
+      }
+    }
+
     let craftBody;
     let craftSections;
     if (skillCraftRequires.length > 0) {
@@ -3202,12 +3944,17 @@ export async function startServer({
     let designSystemBody;
     let designSystemTitle;
     // Compiled (tokens.css + components.html) form of the active brand.
-    // Gated by `OD_DESIGN_TOKEN_CHANNEL` while the experiment is in the
-    // smoke-test phase: flag-off keeps the daemon byte-equivalent to the
-    // pre-PR-C path; flag-on appends the tokens contract + reference
-    // fixture to the system prompt for any brand that ships those files
-    // (today: `default` and `kami`; every other brand falls through
-    // silently because the files are absent).
+    // Default-on as of PR-D — every chat that picks a brand with
+    // `tokens.css` + `components.html` siblings (today: `default` and
+    // `kami`; every other brand falls through silently because the
+    // files are absent) gets the structured token contract appended to
+    // the system prompt automatically.
+    //
+    // `OD_DESIGN_TOKEN_CHANNEL=0` is the kill switch: it forces the
+    // daemon back to the pre-PR-C DESIGN.md-only path for every brand,
+    // including the structured ones. Any other value (unset, `1`,
+    // `true`, etc.) keeps the new default. Drift on prose-only brands
+    // is pinned by `scripts/check-design-system-flag-parity.ts`.
     let designSystemTokensCss;
     let designSystemFixtureHtml;
     if (effectiveDesignSystemId) {
@@ -3218,23 +3965,17 @@ export async function startServer({
         (await readDesignSystem(DESIGN_SYSTEMS_DIR, effectiveDesignSystemId)) ??
         (await readDesignSystem(USER_DESIGN_SYSTEMS_DIR, effectiveDesignSystemId)) ??
         undefined;
-      if (process.env.OD_DESIGN_TOKEN_CHANNEL === '1') {
-        // Try built-in dir first, then user-installed dir, mirroring the
-        // DESIGN.md fallback chain above. Any individual file may be
-        // missing (e.g. tokens.css present, components.html absent); the
-        // composer gates each block independently.
-        const builtIn = await readDesignSystemAssets(DESIGN_SYSTEMS_DIR, effectiveDesignSystemId);
-        const installed = builtIn.tokensCss && builtIn.fixtureHtml
-          ? builtIn
-          : {
-              tokensCss: builtIn.tokensCss
-                ?? (await readDesignSystemAssets(USER_DESIGN_SYSTEMS_DIR, effectiveDesignSystemId)).tokensCss,
-              fixtureHtml: builtIn.fixtureHtml
-                ?? (await readDesignSystemAssets(USER_DESIGN_SYSTEMS_DIR, effectiveDesignSystemId)).fixtureHtml,
-            };
-        designSystemTokensCss = installed.tokensCss;
-        designSystemFixtureHtml = installed.fixtureHtml;
-      }
+      // Single seam: env gate + built-in→user-installed fallback chain
+      // live together inside `resolveDesignSystemAssets` so the whole
+      // server-side asset-resolution path can be tested end-to-end
+      // from real disk fixtures (see `tests/design-system-assets.test.ts`).
+      const assets = await resolveDesignSystemAssets(
+        effectiveDesignSystemId,
+        DESIGN_SYSTEMS_DIR,
+        USER_DESIGN_SYSTEMS_DIR,
+      );
+      designSystemTokensCss = assets.tokensCss;
+      designSystemFixtureHtml = assets.fixtureHtml;
     }
 
     const template =
@@ -3286,12 +4027,7 @@ export async function startServer({
     // other type (missing key, malformed value) collapses to `null`
     // so the resolver falls through to the env / phase tiers exactly
     // the way it did when the toggle had never been touched.
-    const rawProjectOverride =
-      metadata && typeof metadata === 'object'
-        ? (metadata as { critiqueTheaterEnabled?: unknown }).critiqueTheaterEnabled
-        : undefined;
-    const projectCritiqueOverride: boolean | null =
-      typeof rawProjectOverride === 'boolean' ? rawProjectOverride : null;
+    const projectCritiqueOverride = narrowProjectCritiqueOverride(metadata);
     const critiqueEnabledForRun = isCritiqueEnabled({
       phase: parseRolloutPhase(process.env.OD_CRITIQUE_ROLLOUT_PHASE),
       skillPolicy: skillCritiquePolicy,
@@ -3337,6 +4073,54 @@ export async function startServer({
     // non-plain adapters and we'd emit the panel for a run the orchestrator
     // skips. Gating the threading itself keeps composer + orchestrator in
     // exact lockstep regardless of which side enforces eligibility.
+    let pluginBlock;
+    if (
+      typeof appliedPluginSnapshotId === 'string'
+      && appliedPluginSnapshotId.length > 0
+    ) {
+      try {
+        const snap = getSnapshot(db, appliedPluginSnapshotId);
+        if (snap) pluginBlock = pluginPromptBlock(snap);
+      } catch (err) {
+        console.warn(
+          `[plugins] pluginBlock build failed: ${err?.message ?? err}`,
+        );
+      }
+    }
+
+    // Plan §3.M2 / §3.V1 / spec §23.4 — render each stage's atoms[]
+    // into `## Active stage` blocks via the contracts helper when
+    // the run carries a snapshot with a pipeline. Default is now ON
+    // (flipped in §3.V1 once the bundled SKILL.md fragments covered
+    // every Phase 6/7/8 atom); set OD_BUNDLED_ATOM_PROMPTS=0 to opt
+    // out (the runs that need pre-§3.V1 byte-equal prompts: snapshot
+    // replay against an older daemon, regression-bisects).
+    let activeStageBlocks;
+    const bundledAtomPromptsEnabled = process.env.OD_BUNDLED_ATOM_PROMPTS !== '0';
+    if (
+      bundledAtomPromptsEnabled
+      && typeof appliedPluginSnapshotId === 'string'
+      && appliedPluginSnapshotId.length > 0
+    ) {
+      try {
+        const snap = getSnapshot(db, appliedPluginSnapshotId);
+        const stages = snap?.pipeline?.stages ?? [];
+        if (stages.length > 0) {
+          const { loadAtomBodies } = await import('./plugins/atom-bodies.js');
+          const { renderActiveStageBlock } = await import('@open-design/contracts');
+          const blocks = [];
+          for (const stage of stages) {
+            const bodies = await loadAtomBodies(db, stage.atoms ?? []);
+            const block = renderActiveStageBlock({ stageId: stage.id, bodies });
+            if (block.trim().length > 0) blocks.push(block);
+          }
+          if (blocks.length > 0) activeStageBlocks = blocks;
+        }
+      } catch (err) {
+        console.warn(`[plugins] activeStageBlocks build failed: ${(err)?.message ?? err}`);
+      }
+    }
+
     const prompt = composeSystemPrompt({
       agentId,
       includeCodexImagegenOverride: false,
@@ -3370,6 +4154,8 @@ export async function startServer({
       connectedExternalMcp: Array.isArray(connectedExternalMcp)
         ? connectedExternalMcp
         : undefined,
+      ...(pluginBlock ? { pluginBlock } : {}),
+      ...(activeStageBlocks ? { activeStageBlocks } : {}),
       userInstructions,
       projectInstructions,
     });
@@ -3380,6 +4166,79 @@ export async function startServer({
     // the same panel-eligibility decision down to the spawn-path
     // orchestrator gate so prompt and orchestrator stay in lockstep.
     return { prompt, activeSkillDir, critiqueShouldRun };
+  };
+
+  // Plan §3.I1 / §3.D / spec §10.1: fire the pipeline schedule on a
+  // run's SSE stream. Synchronous first emit (the first
+  // pipeline_stage_started event lands before the agent process
+  // starts) + async tail. Stage D wires the atom-worker registry as
+  // the default stage runner; set OD_PIPELINE_RUNNER=stub to fall
+  // back to the canned v1 stub for diagnostic bisection or replay
+  // of pre-Stage-D runs. Errors are swallowed (logged) so a bad
+  // pipeline never blocks the agent run.
+  const firePipelineForRun = (args) => {
+    const { run, snapshot, runs, db: dbHandle } = args;
+    if (!snapshot?.pipeline?.stages?.length) return;
+    const env = { maxIterations: readPluginEnvKnobs().maxDevloopIterations };
+    const emitPipeline = (evt) => {
+      try { runs.emit(run, evt.kind, evt); } catch {/* ignore */}
+    };
+    const emitGenui = (evt) => {
+      try { runs.emit(run, evt.kind, evt); } catch {/* ignore */}
+    };
+    const projectIdForRun = run.projectId
+      ?? snapshot.resolvedContext?.items?.[0]?.id
+      ?? 'project-unknown';
+    const runnerMode = process.env.OD_PIPELINE_RUNNER === 'stub'
+      ? 'stub'
+      : 'registry';
+    let runStage;
+    if (runnerMode === 'stub') {
+      runStage = ({ iteration }) => ({
+        signals: {
+          'critique.score':  iteration >= 0 ? 4 : 0,
+          'preview.ok':      true,
+          'user.confirmed':  true,
+        },
+      });
+    } else {
+      registerBuiltInAtomWorkers();
+      runStage = async ({ stage, iteration, snapshot: stageSnapshot }) => {
+        const outcome = await runStageWithRegistry({
+          db:             dbHandle,
+          runId:          run.id,
+          projectId:      projectIdForRun,
+          conversationId: run.conversationId ?? null,
+          stage,
+          iteration,
+          snapshot:       stageSnapshot,
+        });
+        return {
+          signals:         outcome.signals,
+          critiqueSummary: outcome.critiqueSummary,
+        };
+      };
+    }
+    void runPipelineForRun({
+      db: dbHandle,
+      runId:           run.id,
+      projectId:       projectIdForRun,
+      conversationId:  run.conversationId ?? null,
+      snapshot,
+      pipeline:        snapshot.pipeline,
+      env,
+      runStage,
+      emitPipeline,
+      emitGenui,
+    }).catch((err) => {
+      try {
+        runs.emit(run, 'pipeline_stage_failed', {
+          runId:      run.id,
+          snapshotId: snapshot.snapshotId,
+          message:    String(err?.message ?? err),
+        });
+      } catch { /* ignore */ }
+    });
   };
 
   const startChatRun = async (chatBody, run) => {
@@ -3544,12 +4403,28 @@ export async function startServer({
     const attachmentHint = safeAttachments.length
       ? `\n\nAttached project files: ${safeAttachments.map((p) => `\`${p}\``).join(', ')}`
       : '';
+    // Plan §3.A3 / spec §9: thread plugin context onto every tool token
+    // so the connector execute route can re-validate the §5.3
+    // capability gate without re-reading the SQLite snapshot row.
+    let pluginGrantContext = null;
+    if (cwd && typeof projectId === 'string' && projectId && run?.appliedPluginSnapshotId) {
+      const snap = getSnapshot(db, run.appliedPluginSnapshotId);
+      if (snap) {
+        const installed = getInstalledPlugin(db, snap.pluginId);
+        pluginGrantContext = {
+          pluginSnapshotId: snap.snapshotId,
+          pluginTrust: installed?.trust ?? 'restricted',
+          pluginCapabilitiesGranted: snap.capabilitiesGranted ?? [],
+        };
+      }
+    }
     const toolTokenGrant = cwd && typeof projectId === 'string' && projectId
       ? toolTokenRegistry.mint({
           runId,
           projectId,
           allowedEndpoints: CHAT_TOOL_ENDPOINTS,
           allowedOperations: CHAT_TOOL_OPERATIONS,
+          ...(pluginGrantContext ?? {}),
         })
       : null;
     let toolTokenRevoked = false;
@@ -3632,6 +4507,10 @@ export async function startServer({
         designSystemId,
         streamFormat: def?.streamFormat ?? 'plain',
         connectedExternalMcp,
+        // Plan §3.M2 / §3.V1 — forward the run's snapshot id so the
+        // prompt composer can splice in `## Active stage` blocks.
+        // Default ON; set OD_BUNDLED_ATOM_PROMPTS=0 to opt out.
+        appliedPluginSnapshotId: run?.appliedPluginSnapshotId ?? null,
       });
 
     // Make skill side files reachable through three layers, in order of
@@ -4223,19 +5102,17 @@ export async function startServer({
           typeof projectId === 'string' && projectId ? projectId : null;
         const critiqueBus = {
           emit: (e) => {
+            // Two transports for every critique event: the run-scoped
+            // SSE send back to the originating chat run, plus the
+            // project-scoped fan-out so the Theater mount (subscribed
+            // to /api/projects/:id/events) sees it too. Route the
+            // project fan-out through emitProjectEvent so empty-sink
+            // cleanup and any future broadcast policy (rate limiting,
+            // schema validation, telemetry) apply uniformly across
+            // every project emitter (PerishCode P3 on PR #1338).
             send(e.event, e.data);
             if (critiqueProjectIdForBus) {
-              const sinks = activeProjectEventSinks.get(critiqueProjectIdForBus);
-              if (sinks && sinks.size > 0) {
-                const payload = { ...e.data, type: e.event };
-                for (const sink of Array.from(sinks)) {
-                  try {
-                    sink(payload);
-                  } catch {
-                    sinks.delete(sink);
-                  }
-                }
-              }
+              emitProjectEvent(critiqueProjectIdForBus, { ...e.data, type: e.event });
             }
           },
         };
@@ -4390,6 +5267,53 @@ export async function startServer({
         lastAgentEventPhase = summarizeAgentEventForInactivity(ev);
         noteAgentActivity();
         send('agent', ev);
+        // Stream-json input mode keeps the child's stdin open across the
+        // turn so we can answer interactive tools like `AskUserQuestion`
+        // with a real `tool_result`. The child has no other way to know
+        // the conversation is over, though — without an EOF it sits idle
+        // until the inactivity watchdog kills it. Bookkeeping here:
+        //   - tool_use(AskUserQuestion): record the id so we know we owe
+        //     the model a tool_result before the turn can end.
+        //   - turn_end (per-turn synthesized from `stop_reason`): fire on
+        //     `end_turn` etc. but NOT on `tool_use` — that stop reason
+        //     means the model paused mid-tool, not "turn complete".
+        //   - usage (session result at EOF in single-shot mode).
+        try {
+          if (run.stdinOpen) {
+            if (
+              ev &&
+              typeof ev === 'object' &&
+              ev.type === 'tool_use' &&
+              (ev.name === 'AskUserQuestion' || ev.name === 'ask_user_question') &&
+              typeof ev.id === 'string'
+            ) {
+              if (!run.pendingHostAnswers) run.pendingHostAnswers = new Set();
+              run.pendingHostAnswers.add(ev.id);
+            } else if (
+              ev &&
+              typeof ev === 'object' &&
+              ((ev.type === 'turn_end' &&
+                // `stop_reason: tool_use` means the model paused to wait
+                // for tool execution (claude-code is about to run an
+                // internal tool, or we owe a host tool_result). Either
+                // way the conversation is still in flight — do not close.
+                ev.stopReason !== 'tool_use') ||
+                ev.type === 'usage') &&
+              (!run.pendingHostAnswers || run.pendingHostAnswers.size === 0)
+            ) {
+              // Per-turn `turn_end` (synthesized from
+              // `assistant.message.stop_reason` in `claude-stream`) is the
+              // primary close signal; `usage` is the session-level result
+              // that fires at EOF in single-shot mode. Either is a valid
+              // "this turn is done" cue, but only when there's no host
+              // answer outstanding AND the model isn't paused mid-tool.
+              if (run.child && run.child.stdin && !run.child.stdin.destroyed) {
+                try { run.child.stdin.end(); } catch {}
+              }
+              run.stdinOpen = false;
+            }
+          }
+        } catch {}
       });
       child.stdout.on('data', (chunk) => claude.feed(chunk));
       child.on('close', () => claude.flush());
@@ -4449,6 +5373,7 @@ export async function startServer({
         uploadRoot: UPLOAD_DIR,
       });
     } else if (def.streamFormat === 'acp-json-rpc') {
+      const acpStageTimeoutMs = resolveAcpStageTimeoutMs();
       acpSession = attachAcpSession({
         child,
         prompt: composed,
@@ -4459,6 +5384,7 @@ export async function startServer({
           noteAgentActivity();
           send(event, data);
         },
+        ...(acpStageTimeoutMs !== undefined ? { stageTimeoutMs: acpStageTimeoutMs } : {}),
       });
     } else if (def.streamFormat === 'json-event-stream') {
       // Pipe through sendAgentEvent so the OpenCode `type:'error'` frame
@@ -4582,8 +5508,86 @@ export async function startServer({
       design.runs.finish(run, status, code, signal);
     });
     if (writePromptToChildStdin && child.stdin) {
-      child.stdin.end(composed, 'utf8');
+      const promptInputFormat = def.promptInputFormat ?? 'text';
+      if (promptInputFormat === 'stream-json') {
+        // Wrap the prompt as an Anthropic user message and write it as one
+        // JSONL line. Do NOT close stdin: claude-code keeps reading further
+        // messages until EOF, which is what lets us inject a `tool_result`
+        // block later when the user answers an `AskUserQuestion` card. The
+        // stdin is closed implicitly when the child exits (run terminates,
+        // user cancels, or the model finishes without an outstanding tool
+        // call).
+        const userMessage = JSON.stringify({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: composed }],
+          },
+        });
+        try {
+          child.stdin.write(`${userMessage}\n`, 'utf8');
+        } catch (err) {
+          // Swallow EPIPE here for the same reason as the listener above —
+          // a fast-exiting child has already routed its failure through
+          // stderr / exit handlers.
+          if (err && err.code !== 'EPIPE') throw err;
+        }
+        run.stdinOpen = true;
+      } else {
+        child.stdin.end(composed, 'utf8');
+      }
     }
+  };
+
+  // Send a `tool_result` content block into a still-running stream-json
+  // child. Used for interactive tools that the host answers (currently:
+  // Claude's `AskUserQuestion`). The run must still be active and its
+  // stdin must still be open — we never re-spawn a closed child.
+  const submitToolResultToRun = (runId, toolUseId, content, isError = false) => {
+    const run = design.runs.get(runId);
+    if (!run) return { ok: false, reason: 'not_found' };
+    if (design.runs.isTerminal(run.status)) {
+      return { ok: false, reason: 'run_terminal' };
+    }
+    if (!run.child || !run.child.stdin || run.child.stdin.destroyed) {
+      return { ok: false, reason: 'stdin_closed' };
+    }
+    if (!run.stdinOpen) {
+      return { ok: false, reason: 'stdin_text_mode' };
+    }
+    if (typeof toolUseId !== 'string' || !toolUseId) {
+      return { ok: false, reason: 'bad_tool_use_id' };
+    }
+    const safeContent = typeof content === 'string' ? content : String(content ?? '');
+    const userMessage = JSON.stringify({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: toolUseId,
+            content: safeContent,
+            is_error: !!isError,
+          },
+        ],
+      },
+    });
+    try {
+      run.child.stdin.write(`${userMessage}\n`, 'utf8');
+    } catch (err) {
+      return { ok: false, reason: 'write_failed', error: err && err.message };
+    }
+    if (run.pendingHostAnswers) {
+      run.pendingHostAnswers.delete(toolUseId);
+      if (run.pendingHostAnswers.size === 0 && run.stdinOpen) {
+        if (run.child && run.child.stdin && !run.child.stdin.destroyed) {
+          try { run.child.stdin.end(); } catch {}
+        }
+        run.stdinOpen = false;
+      }
+    }
+    return { ok: true };
   };
 
   orbitService.setRunHandler(async ({
@@ -4739,6 +5743,210 @@ export async function startServer({
       body: skill.body,
       designSystemRequired: skill.designSystemRequired !== false,
     };
+  });
+
+  app.post('/api/runs', async (req, res) => {
+    if (daemonShuttingDown) {
+      return sendApiError(res, 503, 'UPSTREAM_UNAVAILABLE', 'daemon is shutting down');
+    }
+    // Plan §3.A1 / spec §11.5: resolve any pluginId / appliedPluginSnapshotId
+    // before the run is created. The resolver returns null when the body
+    // does not mention a plugin (legacy runs unchanged), an error envelope
+    // for missing-input / capability / not-found / stale, or an ok result
+    // whose `snapshotId` is pinned onto the run object so downstream
+    // code (system prompt block, tool tokens, replay) can reach it.
+    //
+    // Stage A of plugin-driven-flow-plan: when neither the body nor the
+    // project carries plugin info we fall back to the bundled scenario
+    // plugin for the project's `metadata.kind` so direct callers (CLI /
+    // SDK / agent-headless runs) get the same auto-binding the web
+    // create flow already produces. The fallback is silent — a bundled
+    // scenario that is not installed leaves the run plugin-less, which
+    // matches the legacy path.
+    let resolvedSnapshot = null;
+    if (typeof req.body?.projectId === 'string' && req.body.projectId) {
+      let registryView;
+      try {
+        registryView = await loadPluginRegistryView();
+      } catch (err) {
+        return res.status(500).json({ error: String(err) });
+      }
+      const explicitPlugin =
+        req.body && (req.body.pluginId || req.body.appliedPluginSnapshotId);
+      let runResolveBody = req.body;
+      if (!explicitPlugin) {
+        const projectRow = getProject(db, req.body.projectId);
+        const hasPin =
+          typeof projectRow?.appliedPluginSnapshotId === 'string'
+          && projectRow.appliedPluginSnapshotId.length > 0;
+        if (!hasPin) {
+          const fallbackPluginId = defaultScenarioPluginIdForKind(
+            projectRow?.metadata?.kind,
+          );
+          if (fallbackPluginId && getInstalledPlugin(db, fallbackPluginId)) {
+            runResolveBody = { ...req.body, pluginId: fallbackPluginId };
+          }
+        }
+      }
+      const resolved = resolvePluginSnapshot({
+        db,
+        body: runResolveBody,
+        projectId: req.body.projectId,
+        conversationId: typeof req.body.conversationId === 'string'
+          ? req.body.conversationId
+          : null,
+        registry: registryView,
+      });
+      if (resolved && !resolved.ok) {
+        if (!explicitPlugin) {
+          console.warn(
+            `[plugins] default-scenario fallback skipped for run on project ${req.body.projectId}: ${resolved.body?.error?.code ?? 'unknown'}`,
+          );
+        } else {
+          return res.status(resolved.status).json(resolved.body);
+        }
+      } else {
+        resolvedSnapshot = resolved;
+      }
+    }
+    const meta = { ...(req.body || {}) };
+    if (resolvedSnapshot?.ok) {
+      meta.appliedPluginSnapshotId = resolvedSnapshot.snapshotId;
+      if (!meta.pluginId) meta.pluginId = resolvedSnapshot.snapshot.pluginId;
+      if (typeof meta.message !== 'string' || meta.message.trim().length === 0) {
+        const renderedQuery = renderPluginBriefTemplate(
+          resolvedSnapshot.snapshot.query,
+          resolvedSnapshot.snapshot.inputs,
+        ).trim();
+        if (renderedQuery.length > 0) meta.message = renderedQuery;
+      }
+    }
+    const run = design.runs.create(meta);
+    if (resolvedSnapshot?.ok) {
+      try {
+        const { linkSnapshotToRun } = await import('./plugins/snapshots.js');
+        linkSnapshotToRun(db, resolvedSnapshot.snapshotId, run.id);
+      } catch {
+        // Linking is best-effort here; in-memory run still carries the id.
+      }
+    }
+    /** @type {import('@open-design/contracts').ChatRunCreateResponse} */
+    const body = {
+      runId: run.id,
+      ...(resolvedSnapshot?.ok
+        ? {
+            appliedPluginSnapshotId: resolvedSnapshot.snapshotId,
+            pluginId: resolvedSnapshot.snapshot.pluginId,
+          }
+        : {}),
+    };
+    res.status(202).json(body);
+    // Plan §3.I1 / spec §10.1 — fire the pipeline schedule on the run's
+    // SSE stream BEFORE the agent process is started. The first
+    // pipeline_stage_started event is emitted synchronously (before
+    // the first await inside runPipelineForRun), so any SSE consumer
+    // that subscribes between create() and start() sees a stage event
+    // ahead of the agent's message_chunk stream — exactly what §8 e2e-3
+    // expects. The stub stage runner returns immediately so a
+    // non-loop pipeline walks through every stage in O(stages) time;
+    // the audit row in `run_devloop_iterations` records the timeline.
+    if (resolvedSnapshot?.ok && resolvedSnapshot.snapshot.pipeline) {
+      firePipelineForRun({
+        run,
+        snapshot: resolvedSnapshot.snapshot,
+        runs: design.runs,
+        db,
+      });
+    }
+    reconcileAssistantMessageOnRunEnd(db, design.runs, run);
+    design.runs.start(run, () => startChatRun(meta, run));
+  });
+
+  app.get('/api/runs', (req, res) => {
+    const { projectId, conversationId, status } = req.query;
+    const runs = design.runs.list({ projectId, conversationId, status });
+    /** @type {import('@open-design/contracts').ChatRunListResponse} */
+    const body = { runs: runs.map(design.runs.statusBody) };
+    res.json(body);
+  });
+
+  app.get('/api/runs/:id', (req, res) => {
+    const run = design.runs.get(req.params.id);
+    if (!run) return sendApiError(res, 404, 'NOT_FOUND', 'run not found');
+    res.json(design.runs.statusBody(run));
+  });
+
+  app.get('/api/runs/:id/events', (req, res) => {
+    const run = design.runs.get(req.params.id);
+    if (!run) return sendApiError(res, 404, 'NOT_FOUND', 'run not found');
+    design.runs.stream(run, req, res);
+  });
+
+  // Phase 4 / spec §10.3.5 — AG-UI canonical stream.
+  //
+  // Same data plane as /api/runs/:id/events but every record passes
+  // through `encodeOdEventForAgui` first so an external CopilotKit /
+  // AG-UI client can consume the run unmodified. Events the encoder
+  // can't map are dropped; the SSE stream stays canonical even when
+  // OD adds internal-only events later.
+  app.get('/api/runs/:id/agui', async (req, res) => {
+    const run = design.runs.get(req.params.id);
+    if (!run) return sendApiError(res, 404, 'NOT_FOUND', 'run not found');
+    const { encodeOdEventForAgui } = await import('@open-design/agui-adapter');
+    const sse = createSseResponse(res);
+    const lastEventId = Number(req.get('Last-Event-ID') || req.query.after || 0);
+    const emitMapped = (record) => {
+      const mapped = encodeOdEventForAgui(
+        { kind: record.event, ...(record.data ?? {}) },
+        { runId: run.id, seq: record.id, now: Date.now() },
+      );
+      if (mapped) sse.send(mapped.kind, mapped, record.id);
+    };
+    for (const record of run.events) {
+      if (!Number.isFinite(lastEventId) || record.id > lastEventId) emitMapped(record);
+    }
+    if (design.runs.isTerminal(run.status)) {
+      sse.end();
+      return;
+    }
+    // Mirror runs.stream's subscriber pattern but route through the
+    // adapter. We attach a thin wrapper to run.clients so the existing
+    // emit() loop reaches us; the wrapper only implements the
+    // {send,end,cleanup} surface the runs service uses.
+    const adapterClient = {
+      send: (event, data, id) => {
+        const mapped = encodeOdEventForAgui(
+          { kind: event, ...(data ?? {}) },
+          { runId: run.id, seq: id, now: Date.now() },
+        );
+        if (mapped) sse.send(mapped.kind, mapped, id);
+      },
+      end:     () => sse.end(),
+      cleanup: () => sse.cleanup?.(),
+    };
+    run.clients.add(adapterClient);
+    res.on('close', () => {
+      run.clients.delete(adapterClient);
+      sse.cleanup?.();
+    });
+  });
+
+  app.post('/api/runs/:id/cancel', (req, res) => {
+    const run = design.runs.get(req.params.id);
+    if (!run) return sendApiError(res, 404, 'NOT_FOUND', 'run not found');
+    design.runs.cancel(run);
+    /** @type {import('@open-design/contracts').ChatRunCancelResponse} */
+    const body = { ok: true };
+    res.json(body);
+  });
+
+  app.post('/api/chat', (req, res) => {
+    if (daemonShuttingDown) {
+      return sendApiError(res, 503, 'UPSTREAM_UNAVAILABLE', 'daemon is shutting down');
+    }
+    const run = design.runs.create();
+    design.runs.stream(run, req, res);
+    design.runs.start(run, () => startChatRun(req.body || {}, run));
   });
 
   // Each routine fire resolves an agent, prepares project/conversation state,
@@ -4903,7 +6111,7 @@ export async function startServer({
     routines: { routineService },
     validation: validationDeps,
     finalize: finalizeDeps,
-    chat: { startChatRun },
+    chat: { startChatRun, submitToolResultToRun },
     agents: agentDeps,
     critique: critiqueDeps,
     lifecycle: { isDaemonShuttingDown: () => daemonShuttingDown },
@@ -4914,13 +6122,20 @@ export async function startServer({
     routines: { routineService },
   });
 
+  // proxy routes (anthropic / openai / azure / google / ollama) live
+  // in chat-routes.ts now — garnet had a partial duplicate here that
+  // referenced helpers (rejectPluginInProxyBody, extractGeminiText, …)
+  // dropped during the reconcile merge. Deleted to fix the BYOK crash.
+  // Restore the plugin-runs-must-go-through-daemon gate by adding it
+  // to chat-routes.ts if needed.
+
 
   registerChatRoutes(app, {
     db,
     design,
     http: httpDeps,
     auth: userAuthDeps,
-    chat: { startChatRun },
+    chat: { startChatRun, submitToolResultToRun },
     agents: agentDeps,
     critique: critiqueDeps,
     validation: validationDeps,
