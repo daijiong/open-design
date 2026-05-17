@@ -30,8 +30,8 @@
   <a href="https://github.com/nexu-io/open-design/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/nexu-io/open-design?style=flat-square&color=blueviolet&label=release&include_prereleases&display_name=tag" /></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg?style=flat-square" /></a>
   <a href="#supported-coding-agents"><img alt="Agents" src="https://img.shields.io/badge/agents-16%20CLIs%20%2B%20BYOK%20proxy-black?style=flat-square" /></a>
-  <a href="#design-systems"><img alt="Design systems" src="https://img.shields.io/badge/design%20systems-72-orange?style=flat-square" /></a>
-  <a href="#skills"><img alt="Skills" src="https://img.shields.io/badge/skills-31-teal?style=flat-square" /></a>
+  <a href="#design-systems"><img alt="Design systems" src="https://img.shields.io/badge/design%20systems-149-orange?style=flat-square" /></a>
+  <a href="#skills"><img alt="Skills" src="https://img.shields.io/badge/skills-131-teal?style=flat-square" /></a>
   <a href="https://discord.gg/qhbcCH8Am4"><img alt="Discord" src="https://img.shields.io/badge/discord-join-5865F2?style=flat-square&logo=discord&logoColor=white" /></a>
   <a href="https://x.com/nexudotio"><img alt="Follow @nexudotio on X" src="https://img.shields.io/badge/follow-%40nexudotio-1DA1F2?style=flat-square&logo=x&logoColor=white" /></a>
   <a href="QUICKSTART.md"><img alt="Quickstart" src="https://img.shields.io/badge/quickstart-3%20commands-green?style=flat-square" /></a>
@@ -321,6 +321,8 @@ pnpm tools-dev run web
 ```
 
 Ortam gereksinimleri: Node `~24` ve pnpm `10.33.x`. `nvm`/`fnm` yalnızca opsiyonel yardımcılardır; birini kullanıyorsan `pnpm install` öncesinde `nvm install 24 && nvm use 24` veya `fnm install 24 && fnm use 24` çalıştır.
+
+Windows kullanıcıları native kurulum yolu ve küçük bir çift-tıklama launcher için [`docs/windows-troubleshooting.md`](docs/windows-troubleshooting.md) belgesini takip edebilir.
 
 Desktop/background startup, fixed-port restart'lar ve medya üretimi dispatcher kontrolleri (`OD_BIN`, `OD_DAEMON_URL`, `apps/daemon/dist/cli.js`) için [`QUICKSTART.md`](QUICKSTART.md) oku.
 
@@ -885,7 +887,7 @@ Tam walkthrough, merge çıtası, code style ve kabul etmediklerimiz → [`CONTR
 Open Design'ı kod, doküman, feedback, yeni skill, yeni design system veya keskin bir issue ile ileri taşıyan herkese teşekkürler. Her gerçek katkı önemlidir; aşağıdaki wall bunu yüksek sesle söylemenin en kolay yolu.
 
 <a href="https://github.com/nexu-io/open-design/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=nexu-io/open-design&cache_bust=2026-05-15" alt="Open Design contributors" />
+  <img src="https://contrib.rocks/image?repo=nexu-io/open-design&cache_bust=2026-05-17" alt="Open Design contributors" />
 </a>
 
 İlk PR'ını gönderdiysen hoş geldin. [`good-first-issue`/`help-wanted`](https://github.com/nexu-io/open-design/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22%2C%22help+wanted%22) label'ı giriş noktasıdır.
@@ -902,9 +904,9 @@ Yukarıdaki SVG [`.github/workflows/metrics.yml`](.github/workflows/metrics.yml)
 
 <a href="https://star-history.com/#nexu-io/open-design&Date">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=nexu-io/open-design&type=Date&theme=dark&cache_bust=2026-05-15" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=nexu-io/open-design&type=Date&cache_bust=2026-05-15" />
-    <img alt="Open Design star history" src="https://api.star-history.com/svg?repos=nexu-io/open-design&type=Date&cache_bust=2026-05-15" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=nexu-io/open-design&type=Date&theme=dark&cache_bust=2026-05-17" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=nexu-io/open-design&type=Date&cache_bust=2026-05-17" />
+    <img alt="Open Design star history" src="https://api.star-history.com/svg?repos=nexu-io/open-design&type=Date&cache_bust=2026-05-17" />
   </picture>
 </a>
 

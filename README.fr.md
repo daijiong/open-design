@@ -331,6 +331,8 @@ pnpm tools-dev run web
 
 Prérequis : Node `~24` et pnpm `10.33.x`. `nvm` / `fnm` ne sont que des aides facultatives ; si vous en utilisez un, lancez `nvm install 24 && nvm use 24` ou `fnm install 24 && fnm use 24` avant `pnpm install`.
 
+Les utilisateurs Windows peuvent suivre [`docs/windows-troubleshooting.md`](docs/windows-troubleshooting.md) pour le chemin d'installation natif et un petit launcher en double-clic.
+
 Pour le démarrage desktop/background, les redémarrages sur ports fixes et les checks du dispatcher de génération média (`OD_BIN`, `OD_DAEMON_URL`, `apps/daemon/dist/cli.js`), voir [`QUICKSTART.fr.md`](QUICKSTART.fr.md).
 
 Au premier chargement :
@@ -731,7 +733,7 @@ Guide complet, critères de merge, style de code et refus fréquents → [`CONTR
 Merci à toutes les personnes qui font avancer Open Design : code, docs, retours, nouveaux Skills, nouveaux Design Systems ou issues bien ciblées. Chaque vraie contribution compte.
 
 <a href="https://github.com/nexu-io/open-design/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=nexu-io/open-design&cache_bust=2026-05-15" alt="Contributeurs Open Design" />
+  <img src="https://contrib.rocks/image?repo=nexu-io/open-design&cache_bust=2026-05-17" alt="Contributeurs Open Design" />
 </a>
 
 Si vous avez livré votre première PR, bienvenue. Le label [`good-first-issue`/`help-wanted`](https://github.com/nexu-io/open-design/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22%2C%22help+wanted%22) est le point d’entrée.
@@ -748,9 +750,9 @@ Le SVG ci-dessus est régénéré chaque jour par [`.github/workflows/metrics.ym
 
 <a href="https://star-history.com/#nexu-io/open-design&Date">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=nexu-io/open-design&type=Date&theme=dark&cache_bust=2026-05-15" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=nexu-io/open-design&type=Date&cache_bust=2026-05-15" />
-    <img alt="Historique des stars Open Design" src="https://api.star-history.com/svg?repos=nexu-io/open-design&type=Date&cache_bust=2026-05-15" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=nexu-io/open-design&type=Date&theme=dark&cache_bust=2026-05-17" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=nexu-io/open-design&type=Date&cache_bust=2026-05-17" />
+    <img alt="Historique des stars Open Design" src="https://api.star-history.com/svg?repos=nexu-io/open-design&type=Date&cache_bust=2026-05-17" />
   </picture>
 </a>
 

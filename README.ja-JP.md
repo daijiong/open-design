@@ -31,8 +31,8 @@
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg?style=flat-square" /></a>
   <a href="#対応-coding-agent"><img alt="Agents" src="https://img.shields.io/badge/agents-16%20CLIs%20%2B%20BYOK%20proxy-black?style=flat-square" /></a>
   <a href="#design-system">
-  <img alt="Design systems" src="https://img.shields.io/badge/design%20systems-72-orange?style=flat-square" /></a>
-  <a href="#組み込み-skill"><img alt="Skills" src="https://img.shields.io/badge/skills-31-teal?style=flat-square" /></a>
+  <img alt="Design systems" src="https://img.shields.io/badge/design%20systems-149-orange?style=flat-square" /></a>
+  <a href="#組み込み-skill"><img alt="Skills" src="https://img.shields.io/badge/skills-131-teal?style=flat-square" /></a>
   <a href="https://discord.gg/qhbcCH8Am4"><img alt="Discord" src="https://img.shields.io/badge/discord-join-5865F2?style=flat-square&logo=discord&logoColor=white" /></a>
   <a href="QUICKSTART.ja-JP.md"><img alt="Quickstart" src="https://img.shields.io/badge/quickstart-3%20commands-green?style=flat-square" /></a>
 </p>
@@ -330,6 +330,8 @@ pnpm tools-dev run web
 ```
 
 環境要件：Node `~24`、pnpm `10.33.x`。`nvm` / `fnm` はあくまでオプションのヘルパーです。使用する場合は `pnpm install` の前に `nvm install 24 && nvm use 24` または `fnm install 24 && fnm use 24` を実行してください。
+
+Windows ユーザーはネイティブセットアップパスと小さなダブルクリックランチャーについて [`docs/windows-troubleshooting.md`](docs/windows-troubleshooting.md) を参照してください。
 
 デスクトップ / バックグラウンド起動、固定ポート再起動、メディア生成ディスパッチャの確認（`OD_BIN`、`OD_DAEMON_URL`、`apps/daemon/dist/cli.js`）は [`QUICKSTART.ja-JP.md`](QUICKSTART.ja-JP.md) を参照。
 
@@ -721,7 +723,7 @@ Issue、PR、新 Skill、新 Design System を歓迎します。最も効果の�
 コード、ドキュメント、フィードバック、新 Skill、新 Design System、あるいは鋭い Issue — あらゆる形で Open Design を前進させてくださったすべての方に感謝します。すべての実質的なコントリビューションは大切であり、以下のウォールは最もシンプルな感謝の表明です。
 
 <a href="https://github.com/nexu-io/open-design/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=nexu-io/open-design&cache_bust=2026-05-15" alt="Open Design コントリビューター" />
+  <img src="https://contrib.rocks/image?repo=nexu-io/open-design&cache_bust=2026-05-17" alt="Open Design コントリビューター" />
 </a>
 
 初めての PR を送った方 — ようこそ。[`good-first-issue`/`help-wanted`](https://github.com/nexu-io/open-design/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22%2C%22help+wanted%22) ラベルがエントリポイントです。
@@ -738,9 +740,9 @@ Issue、PR、新 Skill、新 Design System を歓迎します。最も効果の�
 
 <a href="https://star-history.com/#nexu-io/open-design&Date">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=nexu-io/open-design&type=Date&theme=dark&cache_bust=2026-05-15" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=nexu-io/open-design&type=Date&cache_bust=2026-05-15" />
-    <img alt="Open Design star history" src="https://api.star-history.com/svg?repos=nexu-io/open-design&type=Date&cache_bust=2026-05-15" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=nexu-io/open-design&type=Date&theme=dark&cache_bust=2026-05-17" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=nexu-io/open-design&type=Date&cache_bust=2026-05-17" />
+    <img alt="Open Design star history" src="https://api.star-history.com/svg?repos=nexu-io/open-design&type=Date&cache_bust=2026-05-17" />
   </picture>
 </a>
 

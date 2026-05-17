@@ -239,6 +239,7 @@ import {
 import { validateArtifactManifestInput } from './artifact-manifest.js';
 import { readCurrentAppVersionInfo } from './app-version.js';
 import {
+  appendMessageStatusEvent,
   deleteConversation,
   deletePreviewComment,
   deleteProject as dbDeleteProject,
@@ -2727,6 +2728,7 @@ export async function startServer({
         completedAt: run.completedAt,
         summary: run.summary,
         error: run.error,
+        errorCode: run.errorCode,
       });
     },
     updateRun: (id, patch) => {
@@ -5243,7 +5245,7 @@ export async function startServer({
         if (authFailure?.status === 'missing') {
           send('error', createSseErrorPayload(
             'AGENT_AUTH_REQUIRED',
-            cursorAuthGuidance(),
+            authFailure.message ?? cursorAuthGuidance(),
             { retryable: true },
           ));
           return;
@@ -5433,15 +5435,20 @@ export async function startServer({
       }
       if (
         code !== 0 &&
-        !run.cancelRequested &&
-        classifyAgentAuthFailure(agentId, `${agentStderrTail}\n${agentStdoutTail}`)?.status === 'missing'
+        !run.cancelRequested
       ) {
-        send('error', createSseErrorPayload(
-          'AGENT_AUTH_REQUIRED',
-          cursorAuthGuidance(),
-          { retryable: true },
-        ));
-        return design.runs.finish(run, 'failed', code ?? 1, signal ?? null);
+        const authFailure = classifyAgentAuthFailure(
+          agentId,
+          `${agentStderrTail}\n${agentStdoutTail}`,
+        );
+        if (authFailure?.status === 'missing') {
+          send('error', createSseErrorPayload(
+            'AGENT_AUTH_REQUIRED',
+            authFailure.message ?? cursorAuthGuidance(),
+            { retryable: true },
+          ));
+          return design.runs.finish(run, 'failed', code ?? 1, signal ?? null);
+        }
       }
       // Empty-output guard: a clean `code === 0` exit on a stream we are
       // tracking, with no error frame and no substantive event, means the
@@ -6062,11 +6069,27 @@ export async function startServer({
 
     const completion = (async () => {
       const finalStatus = await design.runs.wait(run);
+      const failureError = finalStatus.status === 'failed'
+        ? (typeof finalStatus.error === 'string' && finalStatus.error.trim() ? finalStatus.error.trim() : null)
+        : null;
+      const failureErrorCode = finalStatus.status === 'failed'
+        ? (typeof finalStatus.errorCode === 'string' && finalStatus.errorCode.trim() ? finalStatus.errorCode.trim() : null)
+        : null;
+      if (failureError) {
+        appendMessageStatusEvent(db, assistantMessageId, {
+          label: 'error',
+          detail: failureError,
+        });
+      }
       db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`)
         .run(finalStatus.status, Date.now(), assistantMessageId);
       return {
         status: finalStatus.status,
-        summary: `Routine "${routine.name}" ${finalStatus.status}.`,
+        summary: failureError
+          ? `Routine "${routine.name}" failed: ${failureError}`
+          : `Routine "${routine.name}" ${finalStatus.status}.`,
+        error: failureError ?? undefined,
+        errorCode: failureErrorCode ?? undefined,
       };
     })();
 
