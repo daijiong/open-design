@@ -61,7 +61,7 @@ describe('validateArtifactManifestInput', () => {
 
 describe('inferLegacyManifest', () => {
   it('infers markdown manifest for .md files', () => {
-    const out = inferLegacyManifest('README.md');
+    const out = inferLegacyManifest('本地服务操作手册.md');
     expect(out?.kind).toBe('markdown-document');
     expect(out?.renderer).toBe('markdown');
     expect(out?.status).toBe('complete');

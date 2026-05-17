@@ -76,7 +76,7 @@ describe('detectEntryFile', () => {
   });
 
   it('returns null when the folder has no html files', async () => {
-    await writeFile(path.join(dir, 'README.md'), '# hi');
+    await writeFile(path.join(dir, '本地服务操作手册.md'), '# hi');
     expect(await detectEntryFile(dir)).toBeNull();
   });
 

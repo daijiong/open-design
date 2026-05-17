@@ -21,7 +21,7 @@ describe('buildProjectArchive', () => {
     await writeFile(path.join(dir, 'ui-design', 'frames', 'phone.html'), '<frame/>');
     await writeFile(path.join(dir, 'ui-design', 'index.html.artifact.json'), '{}');
     await writeFile(path.join(dir, 'ui-design', '.hidden'), 'secret');
-    await writeFile(path.join(dir, 'README.md'), '# top-level readme');
+    await writeFile(path.join(dir, '本地服务操作手册.md'), '# top-level readme');
   });
 
   afterEach(() => {
@@ -48,7 +48,7 @@ describe('buildProjectArchive', () => {
       .map((entry) => entry.name);
     expect(fileEntries).toContain('DESIGN-HANDOFF.md');
     expect(fileEntries).toContain('DESIGN-MANIFEST.json');
-    expect(fileEntries).toContain('README.md');
+    expect(fileEntries).toContain('本地服务操作手册.md');
     expect(fileEntries).toContain('ui-design/index.html');
     expect(fileEntries).toContain('ui-design/src/app.css');
     // dotfiles and .artifact.json sidecars are filtered, matching listFiles

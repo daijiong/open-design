@@ -122,7 +122,7 @@ export interface OpenDesignLandingDeckInputs {
  * @deprecated Use `OpenDesignLandingDeckInputs`.
  *
  * Backwards-compat alias kept for the v0.3.x line and removed in the next
- * minor (v0.4.0). Migration steps live in `README.md` under
+ * minor (v0.4.0). Migration steps live in `本地服务操作手册.md` under
  * "Migrating from `editorial-collage-deck`".
  */
 export type EditorialCollageDeckInputs = OpenDesignLandingDeckInputs;

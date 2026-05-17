@@ -36,7 +36,7 @@ describe('decideAutoOpenAfterWrite', () => {
       { name: 'index.html', path: 'index.html' },
       { name: 'App.jsx', path: 'App.jsx' },
       { name: 'styles.css', path: 'styles.css' },
-      { name: 'README.md', path: 'README.md' },
+      { name: 'README.md', path: '本地服务操作手册.md' },
     ]);
     expect(result).toEqual({ shouldOpen: true, fileName: 'App.jsx' });
   });

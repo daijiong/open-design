@@ -23,7 +23,7 @@ describe('archiveRootFromFilePath', () => {
 
   it('returns empty for files at the project root', () => {
     expect(archiveRootFromFilePath('index.html')).toBe('');
-    expect(archiveRootFromFilePath('README.md')).toBe('');
+    expect(archiveRootFromFilePath('本地服务操作手册.md')).toBe('');
   });
 
   it('strips a leading slash before scanning', () => {

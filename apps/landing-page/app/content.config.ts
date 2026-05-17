@@ -56,13 +56,13 @@ const craft = defineCollection({
   schema: z.object({}).passthrough(),
 });
 
-// `templates/live-artifacts/<slug>/README.md` — Live Artifact bundles.
+// `templates/live-artifacts/<slug>/本地服务操作手册.md` — Live Artifact bundles.
 // We surface them under `/templates/` together with skills whose `od.mode`
 // is `template` (filtered at render time, not in the schema).
 const templates = defineCollection({
   loader: glob({
     base: '../../templates/live-artifacts',
-    pattern: '*/README.md',
+    pattern: '*/本地服务操作手册.md',
   }),
   schema: z.object({}).passthrough(),
 });

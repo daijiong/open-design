@@ -72,7 +72,7 @@ describe('POST /api/import/folder', () => {
 
   it('returns null entryFile when the folder has no html file', async () => {
     const folder = makeFolder();
-    await writeFile(path.join(folder, 'README.md'), '# hi');
+    await writeFile(path.join(folder, '本地服务操作手册.md'), '# hi');
     const resp = await importFolder({ baseDir: folder });
     const body = (await resp.json()) as { entryFile: string | null };
     expect(body.entryFile).toBeNull();
