@@ -126,7 +126,7 @@ describe('registerBundledPlugins', () => {
   it('skips folders without open-design.json without warning', async () => {
     const folder = path.join(tmpRoot, 'atoms', 'no-manifest');
     await mkdir(folder, { recursive: true });
-    await writeFile(path.join(folder, 'README.md'), '# nothing\n');
+    await writeFile(path.join(folder, '本地服务操作手册.md'), '# nothing\n');
     const result = await registerBundledPlugins({ db, bundledRoot: tmpRoot });
     expect(result.registered).toEqual([]);
   });

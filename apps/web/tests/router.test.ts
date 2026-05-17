@@ -90,11 +90,11 @@ describe('parseRoute / buildPath (issue #1505)', () => {
   });
 
   it('parses a legacy project + file URL with no conversation segment', () => {
-    expect(parseRoute('/projects/p-1/files/README.md')).toEqual({
+    expect(parseRoute('/projects/p-1/files/本地服务操作手册.md')).toEqual({
       kind: 'project',
       projectId: 'p-1',
       conversationId: null,
-      fileName: 'README.md',
+      fileName: '本地服务操作手册.md',
     });
   });
 

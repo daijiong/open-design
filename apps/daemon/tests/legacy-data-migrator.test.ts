@@ -482,7 +482,7 @@ describe('legacyDirHasPayload', () => {
   });
 
   it('returns false when the directory exists but has no app.sqlite', () => {
-    writeFile(path.join(legacyDir, 'README.md'), 'unrelated');
+    writeFile(path.join(legacyDir, '本地服务操作手册.md'), 'unrelated');
     expect(legacyDirHasPayload(legacyDir)).toBe(false);
   });
 

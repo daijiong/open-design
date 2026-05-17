@@ -95,7 +95,7 @@ async function rootReadmeFiles(): Promise<string[]> {
   return entries
     .filter((entry) => entry.isFile() && /^README(?:\.[A-Za-z0-9-]+)?\.md$/.test(entry.name))
     .map((entry) => entry.name)
-    .sort((left, right) => (left === "README.md" ? -1 : right === "README.md" ? 1 : left.localeCompare(right)));
+    .sort((left, right) => (left === "本地服务操作手册.md" ? -1 : right === "本地服务操作手册.md" ? 1 : left.localeCompare(right)));
 }
 
 function extractReadmeSwitcher(source: string): ReadmeSwitcherEntry[] | null {
@@ -116,11 +116,11 @@ function extractReadmeSwitcher(source: string): ReadmeSwitcherEntry[] | null {
 }
 
 function readmeTarget(fileName: string): string {
-  return fileName === "README.md" ? "README.md" : fileName;
+  return fileName === "本地服务操作手册.md" ? "本地服务操作手册.md" : fileName;
 }
 
 function readmeLocale(fileName: string): string | null {
-  if (fileName === "README.md") return null;
+  if (fileName === "本地服务操作手册.md") return null;
   const match = fileName.match(/^README\.([A-Za-z0-9-]+)\.md$/);
   return match?.[1] ?? null;
 }
@@ -164,7 +164,7 @@ async function checkReadmeSwitchers(): Promise<CheckResult> {
   const errors: string[] = [];
   const readmes = await rootReadmeFiles();
   const readmeSet = new Set(readmes);
-  const canonicalName = "README.md";
+  const canonicalName = "本地服务操作手册.md";
   const canonicalSource = await readFile(path.join(repoRoot, canonicalName), "utf8");
   const canonicalEntries = extractReadmeSwitcher(canonicalSource);
 

@@ -1489,7 +1489,7 @@ export async function fetchPluginExampleHtml(
 }
 
 // Fetch a raw text asset shipped inside a plugin (DESIGN.md,
-// SKILL.md, README.md, etc.). Returns null on any error so the
+// SKILL.md, 本地服务操作手册.md, etc.). Returns null on any error so the
 // caller can fall back to a placeholder; callers that need a
 // distinguishable failure should switch to the discriminated
 // SkillExampleResult shape used by the HTML helpers above.

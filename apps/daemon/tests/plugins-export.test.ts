@@ -63,12 +63,12 @@ function persistSampleSnapshot() {
 }
 
 describe('exportPlugin', () => {
-  it('target=od writes SKILL.md + open-design.json + README.md', async () => {
+  it('target=od writes SKILL.md + open-design.json + 本地服务操作手册.md', async () => {
     const snap = persistSampleSnapshot();
     const result = await exportPlugin({ db, snapshotId: snap.snapshotId, target: 'od', outDir: tmpDir });
     expect(result.snapshotId).toBe(snap.snapshotId);
     expect(result.files.map((f) => path.basename(f)).sort()).toEqual([
-      'README.md',
+      '本地服务操作手册.md',
       'SKILL.md',
       'open-design.json',
     ]);
@@ -93,7 +93,7 @@ describe('exportPlugin', () => {
     const snap = persistSampleSnapshot();
     const result = await exportPlugin({ db, snapshotId: snap.snapshotId, target: 'agent-skill', outDir: tmpDir });
     expect(result.files.map((f) => path.basename(f)).sort()).toEqual([
-      'README.md',
+      '本地服务操作手册.md',
       'SKILL.md',
     ]);
   });

@@ -1,6 +1,6 @@
 // Catalog data layer — turns raw Markdown bundles loaded by Astro
 // Content Collections (the `SKILL.md`, `DESIGN.md`, `*.md` craft files,
-// and Live Artifact `README.md` bundles in the repo root) into the
+// and Live Artifact `本地服务操作手册.md` bundles in the repo root) into the
 // shaped records the index and detail pages render.
 //
 // Why this lives in `_lib/` and not in the page files: every page
@@ -383,7 +383,7 @@ export function shapeCraft(entry: CraftEntry): CraftRecord {
 
 export async function getCraftRecords(): Promise<ReadonlyArray<CraftRecord>> {
   const entries = await getCollection('craft');
-  // Astro normalizes the entry id from `craft/README.md` to `readme`
+  // Astro normalizes the entry id from `craft/本地服务操作手册.md` to `readme`
   // (lowercase, extension stripped). Comparing the raw `'README'` string
   // misses it on disk and used to ship `/craft/readme/` as a public
   // craft principle and inflate the nav count by one. Compare

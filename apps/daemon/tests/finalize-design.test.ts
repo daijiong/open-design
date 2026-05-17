@@ -188,8 +188,8 @@ describe('resolveCurrentArtifact', () => {
   it('falls through to newest .artifact.json when active tab points at a non-artifact file', async () => {
     const { db, projectsRoot } = setupResolverFixture();
 
-    // README.md - no artifact sidecar - active tab points here.
-    await writeProjectFile(projectsRoot, PROJECT_ID, 'README.md', '# notes\n');
+    // 本地服务操作手册.md - no artifact sidecar - active tab points here.
+    await writeProjectFile(projectsRoot, PROJECT_ID, '本地服务操作手册.md', '# notes\n');
     // The actual artifact - NOT in active tab.
     await writeProjectFile(projectsRoot, PROJECT_ID, 'design.html', '<p>design</p>', {
       artifactManifest: {
@@ -202,7 +202,7 @@ describe('resolveCurrentArtifact', () => {
         updatedAt: '2026-05-07T00:00:00.000Z',
       },
     });
-    setActiveTab(db, 'README.md');
+    setActiveTab(db, '本地服务操作手册.md');
 
     const out = await resolveCurrentArtifact(db, projectsRoot, PROJECT_ID);
     expect(out).not.toBeNull();
@@ -213,8 +213,8 @@ describe('resolveCurrentArtifact', () => {
   it('returns null when no active tab and no .artifact.json sidecars exist', async () => {
     const { db, projectsRoot } = setupResolverFixture();
 
-    // README.md only - no artifact sidecars anywhere.
-    await writeProjectFile(projectsRoot, PROJECT_ID, 'README.md', '# notes\n');
+    // 本地服务操作手册.md only - no artifact sidecars anywhere.
+    await writeProjectFile(projectsRoot, PROJECT_ID, '本地服务操作手册.md', '# notes\n');
 
     const out = await resolveCurrentArtifact(db, projectsRoot, PROJECT_ID);
     expect(out).toBeNull();

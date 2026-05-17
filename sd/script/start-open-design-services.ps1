@@ -7,7 +7,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$WorkspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$WorkspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $ToolsDevBin = Join-Path $WorkspaceRoot "tools\dev\bin\tools-dev.mjs"
 $TsxCli = Join-Path $WorkspaceRoot "node_modules\.pnpm\tsx@4.21.0\node_modules\tsx\dist\cli.mjs"
 $Node24Dir = Split-Path -Parent $Node24Path

@@ -5,7 +5,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$WorkspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$WorkspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $ToolsDevBin = Join-Path $WorkspaceRoot "tools\dev\bin\tools-dev.mjs"
 
 if (-not (Test-Path -LiteralPath $Node24Path)) {

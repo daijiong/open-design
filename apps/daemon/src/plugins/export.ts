@@ -124,7 +124,7 @@ export async function exportPlugin(input: ExportInput): Promise<ExportResult> {
     'This folder was produced by `od plugin export`.',
     '',
   ].join('\n');
-  const readmePath = path.join(folder, 'README.md');
+  const readmePath = path.join(folder, '本地服务操作手册.md');
   await fsp.writeFile(readmePath, readme, 'utf8');
   written.push(readmePath);
 

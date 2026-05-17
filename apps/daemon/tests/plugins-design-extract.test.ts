@@ -116,7 +116,7 @@ module.exports = {
   });
 
   it('returns an empty bag when no source files contain design tokens', async () => {
-    await writeFile(path.join(repo, 'README.md'), '# fixture without tokens\n\nNothing to extract.');
+    await writeFile(path.join(repo, '本地服务操作手册.md'), '# fixture without tokens\n\nNothing to extract.');
     const report = await importThenExtract();
     expect(report.colors).toEqual([]);
     expect(report.spacing).toEqual([]);

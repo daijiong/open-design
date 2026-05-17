@@ -58,7 +58,7 @@ describe('parseArtifactManifest', () => {
 
 describe('inferLegacyManifest', () => {
   it('infers markdown manifests for .md files', () => {
-    const out = inferLegacyManifest({ entry: 'README.md' });
+    const out = inferLegacyManifest({ entry: '本地服务操作手册.md' });
     expect(out?.kind).toBe('markdown-document');
     expect(out?.renderer).toBe('markdown');
     expect(out?.status).toBe('complete');

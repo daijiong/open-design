@@ -54,7 +54,7 @@ export async function scaffoldPlugin(input: ScaffoldInput): Promise<ScaffoldResu
   try {
     const entries = await fsp.readdir(folder).catch(() => []);
     const conflicts = entries.filter((e) =>
-      e === 'SKILL.md' || e === 'open-design.json' || e === '.claude-plugin' || e === 'README.md',
+      e === 'SKILL.md' || e === 'open-design.json' || e === '.claude-plugin' || e === '本地服务操作手册.md',
     );
     if (conflicts.length > 0) {
       throw new ScaffoldError(`destination ${folder} already contains ${conflicts.join(', ')}; refusing to overwrite`);
@@ -149,7 +149,7 @@ export async function scaffoldPlugin(input: ScaffoldInput): Promise<ScaffoldResu
     'Edit `open-design.json` to refine the marketplace card and inputs.',
     '',
   ].join('\n');
-  const readmePath = path.join(folder, 'README.md');
+  const readmePath = path.join(folder, '本地服务操作手册.md');
   await fsp.writeFile(readmePath, readme, 'utf8');
   written.push(readmePath);
 

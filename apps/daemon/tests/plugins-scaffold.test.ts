@@ -20,14 +20,14 @@ afterEach(async () => {
 });
 
 describe('scaffoldPlugin', () => {
-  it('writes SKILL.md + open-design.json + README.md by default', async () => {
+  it('writes SKILL.md + open-design.json + 本地服务操作手册.md by default', async () => {
     const result = await scaffoldPlugin({
       targetDir: tmpDir,
       id:        'sample-plugin',
     });
     expect(result.folder).toBe(path.join(tmpDir, 'sample-plugin'));
     expect(result.files.map((f) => path.basename(f)).sort()).toEqual([
-      'README.md',
+      '本地服务操作手册.md',
       'SKILL.md',
       'open-design.json',
     ]);
