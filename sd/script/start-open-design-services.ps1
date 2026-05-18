@@ -1,7 +1,9 @@
 param(
-  [string]$Node24Path = "C:\Users\Administrator\AppData\Local\nvm\v24.15.0\node.exe",
+  [string]$Node24Path = "",
   [int]$DaemonPort = 17456,
   [int]$WebPort = 17573,
+  [string]$BindHost = "127.0.0.1",
+  [string]$AllowedOrigins = "",
   [string]$Namespace = "default"
 )
 
@@ -10,7 +12,6 @@ $ErrorActionPreference = "Stop"
 $WorkspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $ToolsDevBin = Join-Path $WorkspaceRoot "tools\dev\bin\tools-dev.mjs"
 $TsxCli = Join-Path $WorkspaceRoot "node_modules\.pnpm\tsx@4.21.0\node_modules\tsx\dist\cli.mjs"
-$Node24Dir = Split-Path -Parent $Node24Path
 $RuntimeBase = Join-Path $WorkspaceRoot ".tmp\tools-dev"
 $NamespaceRoot = Join-Path $RuntimeBase $Namespace
 $WebRuntime = Join-Path $NamespaceRoot "web"
@@ -23,6 +24,26 @@ function Assert-FileExists([string]$Path, [string]$Label) {
   if (-not (Test-Path -LiteralPath $Path)) {
     throw "$Label not found: $Path"
   }
+}
+
+function Resolve-Node24Path([string]$RequestedPath) {
+  if ($RequestedPath -ne "") {
+    Assert-FileExists $RequestedPath "Node 24"
+    return (Resolve-Path -LiteralPath $RequestedPath).Path
+  }
+
+  $nodeCommand = Get-Command node -ErrorAction SilentlyContinue
+  if ($null -eq $nodeCommand) {
+    throw "Node 24 not found on PATH. Install Node 24 or pass -Node24Path `"C:\path\to\node.exe`"."
+  }
+
+  $candidatePath = $nodeCommand.Source
+  $version = & $candidatePath -v
+  if ($LASTEXITCODE -ne 0 -or $version -notmatch "^v24\.") {
+    throw "Node 24 required, but PATH resolves node to $version at $candidatePath. Pass -Node24Path `"C:\path\to\node.exe`"."
+  }
+
+  return $candidatePath
 }
 
 function Quote-Arg([string]$Value) {
@@ -69,7 +90,8 @@ function Get-ToolsDevStatus {
   return ($json | Out-String | ConvertFrom-Json)
 }
 
-Assert-FileExists $Node24Path "Node 24"
+$Node24Path = Resolve-Node24Path $Node24Path
+$Node24Dir = Split-Path -Parent $Node24Path
 Assert-FileExists $ToolsDevBin "tools-dev"
 Assert-FileExists $TsxCli "tsx CLI"
 
@@ -110,6 +132,9 @@ $commonEnv = @{
   OD_SIDECAR_NAMESPACE = $Namespace
   OD_SIDECAR_SOURCE = "tools-dev"
 }
+if ($AllowedOrigins -ne "") {
+  $commonEnv["OD_ALLOWED_ORIGINS"] = $AllowedOrigins
+}
 
 $daemonIpc = "\\.\pipe\open-design-$Namespace-daemon"
 $daemonEnv = $commonEnv.Clone()
@@ -134,6 +159,7 @@ $webEnv = $commonEnv.Clone()
 $webEnv["OD_SIDECAR_IPC_PATH"] = $webIpc
 $webEnv["OD_PORT"] = [string]$DaemonPort
 $webEnv["OD_WEB_PORT"] = [string]$WebPort
+$webEnv["OD_HOST"] = $BindHost
 $webEnv["PORT"] = [string]$WebPort
 $webEnv["OD_WEB_DIST_DIR"] = $NextDist
 $webEnv["OD_WEB_TSCONFIG_PATH"] = $NextTsconfig
