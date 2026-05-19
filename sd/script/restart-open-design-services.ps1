@@ -2,7 +2,7 @@ param(
   [string]$Node24Path = "",
   [int]$DaemonPort = 17456,
   [int]$WebPort = 17573,
-  [string]$BindHost = "127.0.0.1",
+  [string]$BindHost = "0.0.0.0",
   [string]$AllowedOrigins = "",
   [string]$Namespace = "default"
 )

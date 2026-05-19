@@ -18,6 +18,8 @@ export const CHAT_TOOL_OPERATIONS = [
   'live-artifacts:update',
   'connectors:list',
   'connectors:execute',
+  'media:generate',
+  'media:tasks:wait',
 ] as const;
 
 export type ToolEndpoint = (typeof CHAT_TOOL_ENDPOINTS)[number] | (string & {});

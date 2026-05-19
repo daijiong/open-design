@@ -2,7 +2,7 @@ param(
   [string]$Node24Path = "",
   [int]$DaemonPort = 17456,
   [int]$WebPort = 17573,
-  [string]$BindHost = "127.0.0.1",
+  [string]$BindHost = "0.0.0.0",
   [string]$AllowedOrigins = "",
   [string]$Namespace = "default"
 )
@@ -90,10 +90,44 @@ function Get-ToolsDevStatus {
   return ($json | Out-String | ConvertFrom-Json)
 }
 
+function Resolve-AllowedOrigins([string]$ConfiguredOrigins, [string]$HostName, [int]$Port) {
+  if ($ConfiguredOrigins -ne "") {
+    return $ConfiguredOrigins
+  }
+
+  if ($HostName -eq "127.0.0.1" -or $HostName -eq "localhost" -or $HostName -eq "::1" -or $HostName -eq "[::1]") {
+    return ""
+  }
+
+  $hosts = New-Object System.Collections.Generic.List[string]
+  if ($HostName -ne "0.0.0.0" -and $HostName -ne "::") {
+    $hosts.Add($HostName)
+  } else {
+    $addresses = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+      Where-Object {
+        $_.IPAddress -notlike "127.*" -and
+        $_.IPAddress -notlike "169.254.*" -and
+        $_.PrefixOrigin -ne "WellKnown"
+      } |
+      Select-Object -ExpandProperty IPAddress -Unique
+
+    foreach ($address in $addresses) {
+      $hosts.Add($address)
+    }
+  }
+
+  $origins = $hosts |
+    Select-Object -Unique |
+    ForEach-Object { "http://${_}:$Port" }
+
+  return ($origins -join ",")
+}
+
 $Node24Path = Resolve-Node24Path $Node24Path
 $Node24Dir = Split-Path -Parent $Node24Path
 Assert-FileExists $ToolsDevBin "tools-dev"
 Assert-FileExists $TsxCli "tsx CLI"
+$AllowedOrigins = Resolve-AllowedOrigins $AllowedOrigins $BindHost $WebPort
 
 $status = Get-ToolsDevStatus
 if ($status.apps.daemon.state -eq "running" -and $status.apps.web.state -eq "running") {
@@ -183,3 +217,6 @@ Write-Host "Daemon root PID: $daemonRootPid"
 Write-Host "Web root PID:    $webRootPid"
 Write-Host "Web:             $($finalStatus.apps.web.url)"
 Write-Host "Daemon:          $($finalStatus.apps.daemon.url)"
+if ($AllowedOrigins -ne "") {
+  Write-Host "Allowed origins: $AllowedOrigins"
+}

@@ -64,6 +64,7 @@ The daemon spawns you with these env vars set (verify with \`echo\`):
 - \`OD_PROJECT_ID\`  — the active project's id. Pass it as \`--project "$OD_PROJECT_ID"\`.
 - \`OD_PROJECT_DIR\` — the project's files folder (your cwd). Generated files land here.
 - \`OD_DAEMON_URL\`  — base URL of the local daemon, e.g. \`http://127.0.0.1:7456\`.
+- \`OD_TOOL_TOKEN\`  — run-scoped authorization token consumed by the wrapper; do not print, persist, or override it.
 
 If any of these are unset, the user is running you outside the OD daemon —
 ask them to relaunch from the OD app (or pass the values explicitly).

@@ -108,6 +108,45 @@ function colorizeLink(url: string): string {
   return `${cyan}${underline}${url}${reset}`;
 }
 
+function parseHostOption(value: string | null | undefined, optionName: string): string | null {
+  if (value == null || value === "") return null;
+  if (!/^[a-zA-Z0-9._\-:[\]@]+$/.test(value)) {
+    throw new Error(`${optionName} contains invalid characters`);
+  }
+  return value;
+}
+
+function parseAllowedOriginOption(value: string | null | undefined, optionName: string): string | null {
+  if (value == null || value === "") return null;
+  const origins = value.split(",").map((origin) => origin.trim()).filter(Boolean);
+  if (origins.length === 0) return null;
+  for (const origin of origins) {
+    let parsed: URL;
+    try {
+      parsed = new URL(origin);
+    } catch {
+      throw new Error(`${optionName} must be a comma-separated list of http:// or https:// origins`);
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error(`${optionName} only supports http:// and https:// origins`);
+    }
+    if (parsed.pathname !== "/" || parsed.search !== "" || parsed.hash !== "") {
+      throw new Error(`${optionName} values must be origins without path, query, or hash`);
+    }
+  }
+  return origins.map((origin) => new URL(origin).origin).join(",");
+}
+
+function webHostEnv(options: CliOptions): Record<string, string> {
+  const host = parseHostOption(options.host, "--host");
+  return host == null ? {} : { OD_HOST: host };
+}
+
+function allowedOriginEnv(options: CliOptions): Record<string, string> {
+  const allowedOrigin = parseAllowedOriginOption(options.allowedOrigin, "--allowed-origin");
+  return allowedOrigin == null ? {} : { OD_ALLOWED_ORIGINS: allowedOrigin };
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value != null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
@@ -431,6 +470,7 @@ async function spawnDaemonRuntime(
       env: {
         [SIDECAR_ENV.DAEMON_PORT]: String(daemonPort ?? 0),
         ...(webPort == null ? {} : { [SIDECAR_ENV.WEB_PORT]: String(webPort) }),
+        ...allowedOriginEnv(options),
         ...(options.parentPid == null ? {} : { [TOOLS_DEV_PARENT_PID_ENV]: String(options.parentPid) }),
         ...(spawnOptions.requireDesktopAuth ? { OD_REQUIRE_DESKTOP_AUTH: "1" } : {}),
       },
@@ -467,6 +507,8 @@ async function spawnWebRuntime(config: ToolDevConfig, options: CliOptions): Prom
         [SIDECAR_ENV.WEB_TSCONFIG_PATH]: config.apps.web.nextTsconfigPath,
         [SIDECAR_ENV.WEB_PORT]: String(webPort ?? 0),
         PORT: String(webPort ?? 0),
+        ...webHostEnv(options),
+        ...allowedOriginEnv(options),
         ...(options.parentPid == null ? {} : { [TOOLS_DEV_PARENT_PID_ENV]: String(options.parentPid) }),
         ...(options.prod === true
           ? { NODE_ENV: "production", OD_WEB_OUTPUT_MODE: "server", OD_WEB_PROD: "1" }
@@ -991,6 +1033,8 @@ function addPortOptions(command: ReturnType<typeof cli.command>) {
   return command
     .option("--daemon-port <port>", "force daemon port; conflict quick-fails")
     .option("--web-port <port>", "force web port; conflict quick-fails")
+    .option("--host <addr>", "web bind host (default: 127.0.0.1; use 0.0.0.0 for LAN access)")
+    .option("--allowed-origin <origin>", "extra browser origin allowed by daemon; comma-separated")
     .option("--prod", "use production build (requires pnpm --filter @open-design/web build first)");
 }
 

@@ -31,7 +31,9 @@ export const DEFAULT_STOP_APPS = [APP_KEYS.DESKTOP, APP_KEYS.WEB, APP_KEYS.DAEMO
 export type ToolDevAppName = (typeof ALL_APPS)[number];
 
 export type ToolDevOptions = {
+  allowedOrigin?: string;
   daemonPort?: number | string | null;
+  host?: string;
   json?: boolean;
   namespace?: string;
   prod?: boolean;

@@ -380,7 +380,7 @@ async function runMediaGenerate(rawArgs) {
   try {
     resp = await fetch(url, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: jsonRequestHeaders(),
       body: JSON.stringify(body),
     });
   } catch (err) {
@@ -444,7 +444,7 @@ async function pollUntilDoneOrBudget(daemonUrl, taskId, sinceStart) {
     try {
       resp = await fetch(url, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: jsonRequestHeaders(),
         body: JSON.stringify({ since, timeoutMs: callTimeout }),
       });
     } catch (err) {
@@ -526,6 +526,15 @@ async function pollUntilDoneOrBudget(daemonUrl, taskId, sinceStart) {
       `(exit code 2 = still running).\n`,
   );
   process.exit(2);
+}
+
+function jsonRequestHeaders() {
+  const headers = { 'content-type': 'application/json' };
+  const token = process.env.OD_TOOL_TOKEN;
+  if (typeof token === 'string' && token) {
+    headers.authorization = `Bearer ${token}`;
+  }
+  return headers;
 }
 
 function surfaceFetchError(err, daemonUrl) {

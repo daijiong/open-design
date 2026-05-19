@@ -1,5 +1,6 @@
 import type { Express } from 'express';
 import type { RouteDeps } from './server-context.js';
+import { toolTokenRegistry } from './tool-tokens.js';
 
 export interface RegisterMediaRoutesDeps extends RouteDeps<'db' | 'http' | 'auth' | 'paths' | 'ids' | 'media' | 'appConfig' | 'orbit' | 'nativeDialogs' | 'projectStore' | 'projectFiles' | 'conversations' | 'research'> {}
 
@@ -17,6 +18,40 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
   const { insertConversation, upsertMessage } = ctx.conversations;
   const { searchResearch, ResearchError } = ctx.research;
   const getResolvedPort = () => resolvedPortRef.current;
+
+  const bearerTokenFromRequest = (req: any): string | undefined => {
+    const header = req.get('authorization');
+    if (typeof header !== 'string') return undefined;
+    const match = /^Bearer\s+(.+)$/i.exec(header.trim());
+    return match?.[1];
+  };
+
+  const requireMediaProjectAccess = (
+    req: any,
+    res: any,
+    projectId: string,
+    operation: 'media:generate' | 'media:tasks:wait',
+  ): boolean => {
+    const token = bearerTokenFromRequest(req);
+    if (!token) return Boolean(requireProjectAccess(req, res, projectId));
+
+    const validation = toolTokenRegistry.validate(token, { operation });
+    if (!validation.ok) {
+      const status = validation.code === 'TOOL_OPERATION_DENIED' ? 403 : 401;
+      sendApiError(res, status, validation.code, validation.message, {
+        details: { operation },
+      });
+      return false;
+    }
+
+    if (validation.grant.projectId !== projectId) {
+      sendApiError(res, 403, 'FORBIDDEN', 'projectId is derived from the tool token');
+      return false;
+    }
+
+    return true;
+  };
+
   app.get('/api/media/models', (_req, res) => {
     res.json({
       providers: MEDIA_PROVIDERS,
@@ -153,8 +188,7 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
 
     try {
       const projectId = req.params.id;
-      const project = requireProjectAccess(req, res, projectId);
-      if (!project) return;
+      if (!requireMediaProjectAccess(req, res, projectId, 'media:generate')) return;
 
       const taskId = randomUUID();
       const task = createMediaTask(taskId, projectId, {
@@ -280,7 +314,7 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
     const taskId = req.params.id;
     const task = getLiveMediaTask(taskId);
     if (!task) return res.status(404).json({ error: 'task not found' });
-    if (task.projectId && !requireProjectAccess(req, res, task.projectId)) return;
+    if (task.projectId && !requireMediaProjectAccess(req, res, task.projectId, 'media:tasks:wait')) return;
 
     const since = Number.isFinite(req.body?.since) ? Number(req.body.since) : 0;
     const requestedTimeout = Number.isFinite(req.body?.timeoutMs)

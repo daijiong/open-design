@@ -16,6 +16,7 @@ The daemon injects these environment variables for agent sessions:
 - \`OD_PROJECT_ID\` - active project id. Pass it as \`--project "$OD_PROJECT_ID"\`.
 - \`OD_PROJECT_DIR\` - active project files directory.
 - \`OD_DAEMON_URL\` - base URL of the local daemon.
+- \`OD_TOOL_TOKEN\` - run-scoped authorization token consumed by the wrapper; do not print, persist, or override it.
 
 Run media generation through the dispatcher:
 

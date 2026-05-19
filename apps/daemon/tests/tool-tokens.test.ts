@@ -84,6 +84,8 @@ describe('run-scoped tool tokens', () => {
 
     expect(grant.allowedEndpoints).toEqual([...CHAT_TOOL_ENDPOINTS]);
     expect(grant.allowedOperations).toEqual([...CHAT_TOOL_OPERATIONS]);
+    expect(registry.validate(grant.token, { operation: 'media:generate', nowMs: 1_001 })).toMatchObject({ ok: true });
+    expect(registry.validate(grant.token, { operation: 'media:tasks:wait', nowMs: 1_001 })).toMatchObject({ ok: true });
     registry.clear();
   });
 });
