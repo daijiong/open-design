@@ -19,6 +19,8 @@ vi.mock('../../src/providers/registry', () => ({
 const project: Project = {
   id: 'project-1',
   name: 'Landing refresh',
+  ownerName: 'Ava Chen',
+  ownerEmail: 'ava@example.com',
   skillId: null,
   designSystemId: null,
   createdAt: 1,
@@ -53,6 +55,26 @@ describe('DesignsTab select mode', () => {
     fireEvent.click(screen.getByTestId('designs-view-kanban'));
 
     expect(screen.queryByRole('button', { name: 'Select' })).toBeNull();
+  });
+
+  it('shows the account that created each design in grid and kanban views', () => {
+    render(
+      <DesignsTab
+        projects={[project]}
+        skills={[]}
+        designSystems={[]}
+        onOpen={vi.fn()}
+        onOpenLiveArtifact={vi.fn()}
+        onDelete={vi.fn()}
+        onRename={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('ava@example.com')).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('designs-view-kanban'));
+
+    expect(screen.getByText('ava@example.com')).toBeTruthy();
   });
 
   it('exits select mode when switching to kanban view', () => {

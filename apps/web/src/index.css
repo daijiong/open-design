@@ -7389,6 +7389,25 @@ button.connector-action.is-loading {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.design-card-owner {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  font-size: 11.5px;
+  line-height: 1.25;
+  color: var(--text-muted);
+}
+.design-card-owner svg {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+}
+.design-card-owner span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .design-card-meta .ds {
   color: var(--accent);
 }
@@ -7876,6 +7895,9 @@ button.connector-action.is-loading {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.design-kanban-card .design-card-owner {
+  font-size: 11.5px;
 }
 .design-kanban-card-meta .ds {
   color: var(--text-strong);

@@ -454,6 +454,7 @@ export function DesignsTab({
 						const p = item.project;
 						const skill = skillName(p.skillId);
 						const ds = dsName(p.designSystemId);
+						const owner = projectOwnerDisplay(p);
 						if (item.type === "live-artifact") {
 							const artifact = item.liveArtifact;
 							const title = liveArtifactCardTitle(p, artifact);
@@ -507,6 +508,7 @@ export function DesignsTab({
 										<div className="design-card-name" title={title}>
 											{title}
 										</div>
+										<OwnerLine owner={owner} />
 										<div className="design-card-meta">
 											<span className="ds">{metaLead}</span>
 											{" · "}
@@ -637,6 +639,7 @@ export function DesignsTab({
 									<div className="design-card-name" title={p.name}>
 										{p.name}
 									</div>
+									<OwnerLine owner={owner} />
 									<div className="design-card-meta">
 										{ds ? (
 											<span className="ds">{ds}</span>
@@ -686,6 +689,7 @@ export function DesignsTab({
 										colProjects.map(({ project: p }) => {
 											const skill = skillName(p.skillId);
 											const ds = dsName(p.designSystemId);
+											const owner = projectOwnerDisplay(p);
 											return (
 												<div
 													key={p.id}
@@ -719,6 +723,7 @@ export function DesignsTab({
 													>
 														{p.name}
 													</div>
+													<OwnerLine owner={owner} />
 													<div className="design-kanban-card-meta">
 														{ds ? (
 															<span className="ds">{ds}</span>
@@ -856,6 +861,26 @@ function artifactStatusLabel(
 	if (refreshStatus === "failed") return t("designs.statusRefreshFailed");
 	if (refreshStatus === "succeeded") return t("designs.statusRefreshed");
 	return t("designs.statusLive");
+}
+
+function projectOwnerDisplay(project: Project): { label: string; title: string } | null {
+	const label = project.ownerEmail || project.ownerName;
+	if (!label) return null;
+	const title =
+		project.ownerName && project.ownerEmail
+			? `${project.ownerName} <${project.ownerEmail}>`
+			: label;
+	return { label, title };
+}
+
+function OwnerLine({ owner }: { owner: { label: string; title: string } | null }) {
+	if (!owner) return null;
+	return (
+		<div className="design-card-owner" title={owner.title}>
+			<Icon name="users" size={11} />
+			<span>{owner.label}</span>
+		</div>
+	);
 }
 
 function shouldHideProjectCard(project: Project, liveArtifacts: LiveArtifactSummary[]): boolean {
