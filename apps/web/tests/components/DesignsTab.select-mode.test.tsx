@@ -57,7 +57,7 @@ describe('DesignsTab select mode', () => {
     expect(screen.queryByRole('button', { name: 'Select' })).toBeNull();
   });
 
-  it('shows the account that created each design in grid and kanban views', () => {
+  it('shows the account name and email that created each design in grid and kanban views', () => {
     render(
       <DesignsTab
         projects={[project]}
@@ -70,10 +70,12 @@ describe('DesignsTab select mode', () => {
       />,
     );
 
+    expect(screen.getByText('Ava Chen')).toBeTruthy();
     expect(screen.getByText('ava@example.com')).toBeTruthy();
 
     fireEvent.click(screen.getByTestId('designs-view-kanban'));
 
+    expect(screen.getByText('Ava Chen')).toBeTruthy();
     expect(screen.getByText('ava@example.com')).toBeTruthy();
   });
 

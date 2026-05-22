@@ -33,7 +33,6 @@ import {
   AUDIO_DURATIONS_SEC,
   AUDIO_MODELS_BY_KIND,
   DEFAULT_AUDIO_MODEL,
-  DEFAULT_IMAGE_MODEL,
   DEFAULT_VIDEO_MODEL,
   findProvider,
   IMAGE_MODELS,
@@ -85,6 +84,7 @@ type PromptTemplatePick = {
 };
 
 const SFX_AUDIO_DURATIONS_SEC = AUDIO_DURATIONS_SEC.filter((sec) => sec <= 30);
+const FIXED_IMAGE_MODEL = 'gpt-image-2';
 
 type TranslateFn = (key: keyof Dict, vars?: Record<string, string | number>) => string;
 
@@ -265,7 +265,7 @@ export function NewProjectPanel({
   const [speakerNotes, setSpeakerNotes] = useState(false);
   const [animations, setAnimations] = useState(false);
   const [templateId, setTemplateId] = useState<string | null>(null);
-  const [imageModel, setImageModel] = useState(DEFAULT_IMAGE_MODEL);
+  const [imageModel, setImageModel] = useState(FIXED_IMAGE_MODEL);
   const [imageAspect, setImageAspect] = useState<MediaAspect>('1:1');
   const [videoModel, setVideoModel] = useState(DEFAULT_VIDEO_MODEL);
   const [videoModelTouched, setVideoModelTouched] = useState(false);
@@ -392,15 +392,12 @@ export function NewProjectPanel({
     return null;
   }, [tab, mediaSurface, skills, videoModel]);
 
-  // When the user picks a curated prompt template, propagate the template's
-  // declared `model` and `aspect` onto the actual project state. Without
-  // this the user picks (e.g.) a HyperFrames template but `videoModel`
-  // stays on the default seedance — the agent then dispatches the wrong
-  // model and the render path mismatches the prompt.
+  // When the user picks a curated prompt template, keep image projects on
+  // the fixed OpenAI image model while still honoring the template aspect.
+  // Video templates may still declare a renderer-specific model, e.g.
+  // HyperFrames, so those continue to update `videoModel`.
   function handleImagePromptTemplate(pick: PromptTemplatePick | null) {
     setImagePromptTemplate(pick);
-    const m = pick?.summary.model;
-    if (m && IMAGE_MODELS.some((x) => x.id === m)) setImageModel(m);
     const a = pick?.summary.aspect;
     if (a && (MEDIA_ASPECTS as readonly string[]).includes(a)) {
       setImageAspect(a as MediaAspect);
@@ -2109,10 +2106,10 @@ function MediaProjectOptions(props:
       <div className="newproj-media-options">
         <MediaModelCards
           label={t('newproj.modelLabel')}
-          models={supportedModels('image', IMAGE_MODELS)}
+          models={IMAGE_MODELS.filter((model) => model.id === FIXED_IMAGE_MODEL)}
           mediaProviders={props.mediaProviders}
-          value={props.imageModel}
-          onChange={props.onImageModel}
+          value={FIXED_IMAGE_MODEL}
+          onChange={() => props.onImageModel(FIXED_IMAGE_MODEL)}
         />
         <AspectCards
           label={t('newproj.aspectLabel')}
@@ -2573,7 +2570,7 @@ function buildMetadata(input: {
     if (input.mediaSurface === 'image') {
       return {
         kind,
-        imageModel: input.imageModel,
+        imageModel: FIXED_IMAGE_MODEL,
         imageAspect: input.imageAspect,
         ...buildPromptTemplateMetadata(input.promptTemplate),
         ...inspirations,
@@ -2668,7 +2665,7 @@ function buildPromptTemplateMetadata(
       summary: summary.summary || undefined,
       category: summary.category || undefined,
       tags: summary.tags && summary.tags.length > 0 ? summary.tags : undefined,
-      model: summary.model,
+      model: summary.surface === 'image' ? FIXED_IMAGE_MODEL : summary.model,
       aspect: summary.aspect,
       source: summary.source
         ? {

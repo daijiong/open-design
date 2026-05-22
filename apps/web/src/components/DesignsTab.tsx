@@ -863,22 +863,28 @@ function artifactStatusLabel(
 	return t("designs.statusLive");
 }
 
-function projectOwnerDisplay(project: Project): { label: string; title: string } | null {
-	const label = project.ownerEmail || project.ownerName;
-	if (!label) return null;
-	const title =
-		project.ownerName && project.ownerEmail
-			? `${project.ownerName} <${project.ownerEmail}>`
-			: label;
-	return { label, title };
+function projectOwnerDisplay(project: Project): { name?: string; email?: string; title: string } | null {
+	const name = project.ownerName?.trim();
+	const email = project.ownerEmail?.trim();
+	if (!name && !email) return null;
+	const title = name && email ? `${name} <${email}>` : (name ?? email ?? "");
+	return { ...(name ? { name } : {}), ...(email ? { email } : {}), title };
 }
 
-function OwnerLine({ owner }: { owner: { label: string; title: string } | null }) {
+function OwnerLine({
+	owner,
+}: {
+	owner: { name?: string; email?: string; title: string } | null;
+}) {
 	if (!owner) return null;
 	return (
 		<div className="design-card-owner" title={owner.title}>
 			<Icon name="users" size={11} />
-			<span>{owner.label}</span>
+			<span className="design-card-owner-name">{owner.name}</span>
+			{owner.name && owner.email ? (
+				<span className="design-card-owner-separator">·</span>
+			) : null}
+			<span className="design-card-owner-email">{owner.email}</span>
 		</div>
 	);
 }

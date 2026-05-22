@@ -7402,11 +7402,22 @@ button.connector-action.is-loading {
   flex: 0 0 auto;
   color: var(--text-faint);
 }
-.design-card-owner span {
+.design-card-owner-name,
+.design-card-owner-email {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.design-card-owner-name {
+  flex: 0 1 auto;
+}
+.design-card-owner-email {
+  flex: 1 1 auto;
+}
+.design-card-owner-separator {
+  flex: 0 0 auto;
+  color: var(--text-faint);
 }
 .design-card-meta .ds {
   color: var(--accent);
