@@ -41,6 +41,13 @@ Always quote the prompt value. Never splice unquoted user text into the
 command line. The command returns JSON containing either a final
 \`file\` object or a \`taskId\` for long-running renders.
 
+For image projects, do **not** load, read, invoke, or follow Codex's
+system \`imagegen\` skill, the built-in \`image_gen\` tool, or any
+\`generated_images\` fallback workflow. Those paths produce files outside
+the OD media task lifecycle and are not valid for this project surface.
+Use the dispatcher even when the active agent is Codex and the selected
+model is \`gpt-image-*\`.
+
 For long-running renders, continue with:
 
 \`\`\`bash

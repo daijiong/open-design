@@ -187,7 +187,7 @@ describe('composeSystemPrompt — metadata.promptTemplate', () => {
     expect(out).not.toContain('Source:');
   });
 
-  it('adds a Codex-only built-in imagegen override for gpt-image image projects', () => {
+  it('keeps Codex gpt-image projects on the daemon media dispatcher contract', () => {
     const out = composeSystemPrompt({
       agentId: 'codex',
       metadata: {
@@ -201,28 +201,13 @@ describe('composeSystemPrompt — metadata.promptTemplate', () => {
     const mediaContractIdx = out.indexOf('## Media generation contract');
     const codexOverrideIdx = out.indexOf('## Codex built-in imagegen override');
     expect(mediaContractIdx).toBeGreaterThan(-1);
-    expect(codexOverrideIdx).toBeGreaterThan(mediaContractIdx);
-    expect(out).toContain('use Codex\'s built-in image generation capability');
-    expect(out).toContain('intentional exception to the media generation contract');
-    expect(out).toContain('Do not require, request, or mention `OPENAI_API_KEY`');
-    expect(out).toContain('Generate the image with Codex built-in imagegen');
-    expect(out).toMatch(
-      /actual\s+output path returned by the built-in imagegen result/,
-    );
-    expect(out).toContain('${CODEX_HOME:-$HOME/.codex}/generated_images/.../ig_*.png');
-    expect(out).toContain('verify the exact destination file exists under');
-    expect(out).toMatch(
-      /report the exact source path, destination path, and access\/copy\s+error/,
-    );
-    expect(out).toContain('Do not claim success, silently fall back, or ask about OpenAI/Azure');
-    expect(out).toMatch(
-      /unless the user explicitly chooses fallback in a later\s+turn/,
-    );
-    expect(out).toContain('$OD_PROJECT_DIR');
-    expect(out).toMatch(/ask the user for one-time\s+confirmation/);
+    expect(codexOverrideIdx).toBe(-1);
     expect(out).toContain('"$OD_NODE_BIN" "$OD_BIN"');
-    expect(out).toContain('media generate --surface image --model gpt-image-2');
-    expect(out).toContain('Do not silently fall');
+    expect(out).toContain('media generate --surface image --model <imageModel>');
+    expect(out).toContain('system `imagegen` skill');
+    expect(out).toContain('built-in `image_gen` tool');
+    expect(out).toContain('`generated_images` fallback workflow');
+    expect(out).not.toContain('use Codex\'s built-in image generation capability');
   });
 
   it('keeps non-Codex image projects on the daemon media dispatcher contract', () => {
@@ -244,7 +229,7 @@ describe('composeSystemPrompt — metadata.promptTemplate', () => {
     expect(out).not.toContain('## Codex built-in imagegen override');
   });
 
-  it('normalizes Codex agent selection before applying the imagegen override', () => {
+  it('does not apply the removed Codex imagegen override after agent normalization', () => {
     const out = composeSystemPrompt({
       agentId: '  CoDeX  ',
       metadata: {
@@ -255,11 +240,12 @@ describe('composeSystemPrompt — metadata.promptTemplate', () => {
       },
     });
 
-    expect(out).toContain('## Codex built-in imagegen override');
-    expect(out).toContain('use Codex\'s built-in image generation capability');
+    expect(out).toContain('## Media generation contract');
+    expect(out).not.toContain('## Codex built-in imagegen override');
+    expect(out).not.toContain('use Codex\'s built-in image generation capability');
   });
 
-  it('can omit the Codex imagegen override so live chat appends it after the client system prompt', () => {
+  it('does not render the removed Codex imagegen override when explicitly omitted', () => {
     const out = composeSystemPrompt({
       agentId: 'codex',
       includeCodexImagegenOverride: false,

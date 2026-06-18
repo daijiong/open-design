@@ -118,6 +118,13 @@ before the first generate attempt. Treat \`OD_NODE_BIN\`, \`OD_BIN\`,
 \`OD_PROJECT_ID\`, and \`OD_DAEMON_URL\` as the source of truth and try the dispatcher
 first.
 
+For image projects, do **not** load, read, invoke, or follow Codex's
+system \`imagegen\` skill, the built-in \`image_gen\` tool, or any
+\`generated_images\` fallback workflow. Those paths produce files outside
+the OD media task lifecycle and are not valid for this project surface.
+Use the dispatcher even when the active agent is Codex and the selected
+model is \`gpt-image-*\`.
+
 #### Carve-out: \`hyperframes-html\` is agent-authored, daemon-rendered
 
 The composition HTML is your job; the render itself runs in the

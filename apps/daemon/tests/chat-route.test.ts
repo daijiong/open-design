@@ -5,13 +5,12 @@ import {
   mkdirSync,
   mkdtempSync,
   promises as fsp,
-  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, join, resolve } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
   composeLiveInstructionPrompt,
@@ -23,7 +22,6 @@ import {
   validateCodexGeneratedImagesDir,
 } from '../src/server.js';
 import { getAgentDef } from '../src/agents.js';
-import { renderCodexImagegenOverride } from '../src/prompts/system.js';
 
 function symlinkDir(target: string, link: string): void {
   symlinkSync(target, link, process.platform === 'win32' ? 'junction' : 'dir');
@@ -542,12 +540,8 @@ async function waitForRunStatus(
 }
 
 describe('chat prompt helpers', () => {
-  it('appends the validated Codex override after the client system prompt and removes earlier duplicates', () => {
-    const override = renderCodexImagegenOverride('codex', {
-      kind: 'image',
-      imageModel: 'gpt-image-2',
-      imageAspect: '1:1',
-    });
+  it('does not append the removed Codex imagegen override after the client system prompt', () => {
+    const override = '';
     const clientMediaContract =
       '## Media generation contract\nclient contract wins unless a later override says otherwise';
 
@@ -561,8 +555,7 @@ describe('chat prompt helpers', () => {
     const clientIdx = prompt.indexOf(clientMediaContract);
     const overrideIdx = prompt.indexOf('## Codex built-in imagegen override');
     expect(clientIdx).toBeGreaterThan(-1);
-    expect(overrideIdx).toBeGreaterThan(clientIdx);
-    expect(prompt.match(/## Codex built-in imagegen override/g)).toHaveLength(1);
+    expect(overrideIdx).toBe(-1);
   });
 
   it('defaults enabled research without an explicit query to the current message', () => {
@@ -576,7 +569,7 @@ describe('chat prompt helpers', () => {
     expect(prompt).toContain('the first tool action must be the research command');
   });
 
-  it('resolves only the narrow Codex generated_images allowlist for known gpt-image image projects', () => {
+  it('does not resolve the Codex generated_images allowlist for image projects', () => {
     expect(
       resolveCodexGeneratedImagesDir(
         'codex',
@@ -584,7 +577,7 @@ describe('chat prompt helpers', () => {
         { CODEX_HOME: '/tmp/custom-codex-home' },
         '/home/tester',
       ),
-    ).toBe(resolve('/tmp/custom-codex-home/generated_images'));
+    ).toBeNull();
 
     expect(
       resolveCodexGeneratedImagesDir(
@@ -658,7 +651,7 @@ describe('chat prompt helpers', () => {
     }
   });
 
-  it('grants Codex the canonical validated generated_images dir', () => {
+  it('does not grant Codex the generated_images dir for image projects', () => {
     const root = mkdtempSync(join(tmpdir(), 'od-codex-generated-canonical-'));
     try {
       const actualCodexHome = join(root, 'actual-codex-home');
@@ -676,10 +669,6 @@ describe('chat prompt helpers', () => {
         generatedImagesDir,
         { warn: () => undefined },
       );
-      const canonicalGeneratedImagesDir = join(
-        realpathSync.native(actualCodexHome),
-        'generated_images',
-      );
       const extraAllowedDirs = resolveChatExtraAllowedDirs({
         agentId: 'codex',
         skillsDir: '/repo/skills',
@@ -694,15 +683,15 @@ describe('chat prompt helpers', () => {
         cwd: '/tmp/od-project',
       });
 
-      expect(generatedImagesDir).not.toBe(canonicalGeneratedImagesDir);
-      expect(validatedDir).toBe(canonicalGeneratedImagesDir);
-      expect(extraAllowedDirs).toEqual([canonicalGeneratedImagesDir]);
+      expect(generatedImagesDir).toBeNull();
+      expect(validatedDir).toBeNull();
+      expect(extraAllowedDirs).toEqual([]);
       expect(
         args.filter(
           (arg, index) =>
             arg === '--add-dir' || args[index - 1] === '--add-dir',
         ),
-      ).toEqual(['--add-dir', canonicalGeneratedImagesDir]);
+      ).toEqual([]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
